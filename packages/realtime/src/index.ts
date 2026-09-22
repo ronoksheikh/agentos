@@ -46,4 +46,14 @@ export class RealtimeProtocol {
   }
 }
 
+export interface RealtimeSessionValidator { authenticateToken(token: string): AuthenticatedPrincipal | null | Promise<AuthenticatedPrincipal | null>; }
+
+/** Connection-local WS boundary: the same opaque server session is validated before any scope is accepted. */
+export class AuthenticatedRealtimeConnection {
+  private principal: AuthenticatedPrincipal | null = null;
+  constructor(private readonly sessions: RealtimeSessionValidator, private readonly protocol: RealtimeProtocol) {}
+  async authenticate(token: string) { const principal = await this.sessions.authenticateToken(token); if (!principal || principal.accountState !== "ACTIVE") throw new Error("UNAUTHORIZED_HANDSHAKE"); this.principal = principal; return { type: "authenticated" as const, heartbeatIntervalMs: this.protocol.heartbeatIntervalMs }; }
+  async subscribe(scope: { businessId: string; conversationId?: string; runId?: string }, cursor = 0) { if (!this.principal) throw new Error("UNAUTHENTICATED_SOCKET"); return this.protocol.subscribe(this.principal, scope, cursor); }
+}
+
 export const safeRealtimePayload = (payload: unknown): JsonValue => redactSafe(payload);
