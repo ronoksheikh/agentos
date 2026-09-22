@@ -1,0 +1,1 @@
+export const sections = ["Overview", "Businesses", "Agents", "Agent Playground", "Tools", "Customers", "Conversations", "Memories", "Runs", "Handoffs", "Integrations", "Failures & Queues", "Audit Logs", "Feature Flags", "Team", "Settings"] as const;

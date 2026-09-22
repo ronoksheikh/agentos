@@ -125,6 +125,8 @@ export class AgencyAuthService {
   logout(sessionId: string) { const session = this.sessions.get(sessionId); if (session) session.revokedAt = new Date().toISOString(); }
   revokeUserSessions(actor: { role: AgencyRole; capabilities?: string[] }, userId: string) { requireAgencyCapability(actor, "session.manage"); for (const session of this.sessions.values()) if (session.userId === userId) session.revokedAt = new Date().toISOString(); }
   disableUser(actor: { role: AgencyRole; capabilities?: string[] }, userId: string) { requireAgencyCapability(actor, "agency.manage"); const user = this.users.get(userId); if (!user) throw new Error("USER_NOT_FOUND"); user.state = "DISABLED"; this.revokeUserSessions({ role: "SUPER_ADMIN" }, userId); }
+  setAgencyMembership(actor: { role: AgencyRole; capabilities?: string[] }, userId: string, role: AgencyRole, capabilities: string[] = []) { requireAgencyCapability(actor, "agency.manage"); if (!this.users.has(userId)) throw new Error("USER_NOT_FOUND"); this.memberships.set(userId, { userId, role: agencyRoleSchema.parse(role), capabilities: [...new Set(capabilities)] }); }
+  listAgencyUsers(actor: { role: AgencyRole; capabilities?: string[] }) { requireAgencyCapability(actor, "agency.manage"); return [...this.memberships.values()].map((membership) => { const user = this.users.get(membership.userId)!; return { id: user.id, name: user.name, email: user.email, state: user.state, ...structuredClone(membership) }; }); }
 
   invite(actor: { userId: string; role: AgencyRole; capabilities?: string[] }, input: { email: string; scope: "AGENCY" | "BUSINESS"; role: string; businessId?: string }, now = new Date()) {
     requireAgencyCapability(actor, input.scope === "AGENCY" ? "agency.manage" : "member.manage");
