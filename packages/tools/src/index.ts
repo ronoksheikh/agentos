@@ -6,7 +6,7 @@ export const toolSafetyClassSchema = z.enum(["READ", "WRITE", "SENSITIVE", "DEST
 export const toolPolicyOutcomeSchema = z.enum(["ALLOW", "DENY", "REQUIRE_HUMAN_APPROVAL"]);
 export type ToolSafetyClass = z.infer<typeof toolSafetyClassSchema>;
 export type ToolPolicyOutcome = z.infer<typeof toolPolicyOutcomeSchema>;
-export interface ToolExecutionContext extends TrustedBusinessContext { runId: string; }
+export interface ToolExecutionContext extends TrustedBusinessContext { runId: string; approvedBrowserPolicy?: { enabled: boolean; allowedDomains: string[]; deniedDomains: string[]; maxActions: number; maxEgress: number }; }
 export interface AgentTool<I = unknown, O = unknown> {
   name: string; description: string; category: "memory" | "conversation" | "handoff" | "demo" | "knowledge" | "commerce" | "customer" | "web" | "browser" | "custom" | "goals";
   safetyClass: ToolSafetyClass; requiredCapabilities: string[]; inputSchema: z.ZodType<I>; outputSchema: z.ZodType<O>;

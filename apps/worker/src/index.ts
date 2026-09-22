@@ -26,8 +26,7 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
 }
 
 if (import.meta.main) {
-  const modulePath = process.env.PHASE5_WORKER_COMPOSITION_MODULE;
-  if (!modulePath) throw new Error("PHASE5_WORKER_COMPOSITION_MODULE is required to provide trusted runtime and adapter dependencies");
+  const modulePath = process.env.PHASE5_WORKER_COMPOSITION_MODULE ?? "./composition.ts";
   const { createWorkerDependencies } = await import(modulePath) as { createWorkerDependencies: () => Promise<WorkerDependencies> };
   const stop = await startPhase5Worker(await createWorkerDependencies());
   process.on("SIGTERM", () => { void stop().then(() => process.exit(0)); });

@@ -1,0 +1,40 @@
+services:
+  browser-egress:
+    build:
+      context: .
+      dockerfile: apps/browser-worker/Dockerfile
+      target: egress
+    environment:
+      BROWSER_EGRESS_TOKEN: ${BROWSER_EGRESS_TOKEN:?set BROWSER_EGRESS_TOKEN}
+    ports: ["127.0.0.1:4317:4317"]
+    networks: [browser-private, browser-public]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+  browser-worker:
+    build:
+      context: .
+      dockerfile: apps/browser-worker/Dockerfile
+      target: browser
+    depends_on: [browser-egress]
+    environment:
+      BROWSER_CHROME_PATH: /usr/bin/chromium
+      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?set BROWSER_WORKER_TOKEN}
+      BROWSER_EGRESS_TOKEN: ${BROWSER_EGRESS_TOKEN:?set BROWSER_EGRESS_TOKEN}
+      BROWSER_EGRESS_CONTROL_URL: http://browser-egress:3127
+    networks: [browser-private]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+      - /screenshots:rw,noexec,nosuid,size=128m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 1g
+networks:
+  browser-private:
+    internal: true
+  browser-public: {}

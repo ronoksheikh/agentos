@@ -2,7 +2,7 @@
   "name": "agentos",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.2.23",
+  "packageManager": "bun@1.3.14",
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "test": "bun test",
@@ -12,12 +12,15 @@
     "db:phase4-smoke": "bun scripts/phase4-db-smoke.ts",
     "db:phase5-smoke": "bun scripts/phase5-integration.ts",
     "db:phase5-restart": "bun scripts/phase5-restart-check.ts",
+    "db:phase6-messenger": "bun scripts/phase6-messenger-integration.ts",
     "db:migrate": "drizzle-kit migrate",
     "admin:dev": "next dev apps/admin",
     "admin:build": "next build apps/admin",
     "client:dev": "next dev apps/client -p 3001",
     "client:build": "next build apps/client",
-    "worker:start": "bun apps/worker/src/index.ts"
+    "worker:start": "bun apps/worker/src/index.ts",
+    "browser-worker:start": "bun apps/browser-worker/src/index.ts",
+    "browser-egress:start": "bun apps/browser-worker/src/egress.ts"
   },
   "dependencies": {
     "@mantine/core": "^8",

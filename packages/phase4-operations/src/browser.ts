@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "@agentos/database";
 import type { BrowserActivity, BrowserPersistence, BrowserSession } from "@agentos/web";
@@ -7,6 +7,7 @@ import type { ToolExecutionContext } from "@agentos/tools";
 const safeUrl = (raw: string) => new URL(raw).origin.slice(0, 500);
 export class PostgresBrowserRepository implements BrowserPersistence {
   constructor(private readonly db: NodePgDatabase) {}
+  async recoverLostSessions() { await this.db.update(schema.browserSessions).set({ status: "FAILED", updatedAt: new Date() }).where(and(eq(schema.browserSessions.status, "OPEN"), lt(schema.browserSessions.expiresAt, new Date()))); }
   async saveSession(context: ToolExecutionContext, session: BrowserSession) {
     if (session.businessId !== context.businessId || session.runId !== context.runId) throw new Error("BROWSER_SCOPE_INVALID");
     const previous = (await this.db.select({ businessId: schema.browserSessions.businessId }).from(schema.browserSessions).where(eq(schema.browserSessions.id, session.id)).limit(1))[0];

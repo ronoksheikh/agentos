@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import { ulid } from "ulid";
+import { BrowserCoordinator, RemoteBrowserAdapter, type BrowserPolicy } from "@agentos/web";
+import { InMemoryRealtimeBus } from "@agentos/realtime";
+import { createTrustedBusinessContext } from "@agentos/shared";
+
+const endpoint = process.env.BROWSER_WORKER_URL ?? "http://localhost:4317";
+const token = process.env.BROWSER_WORKER_TOKEN ?? "";
+const adapter = new RemoteBrowserAdapter(endpoint, token);
+const businessId = ulid(); const site = "https://browser.test/";
+const policy: BrowserPolicy = { allowedDomains: ["browser.test"], deniedDomains: [], timeoutMs: 15_000, maxActions: 20, maxEgress: 20, allowDownloads: false, allowUploads: false };
+const signal = new AbortController().signal;
+const id = ulid();
+const opened = await adapter.open(id, site, signal, businessId, policy);
+assert.equal(opened.url, site); assert.equal(opened.title, "AgentOS browser test");
+assert.equal(await adapter.extract(id, "#result", signal), "Ready");
+await adapter.type(id, "#name", "Real Chrome");
+await adapter.click(id, "#go", signal);
+assert.equal(await adapter.extract(id, "#result", signal), "Real Chrome");
+await adapter.click(id, "#egress", signal);
+await Bun.sleep(200);
+assert.equal(await adapter.extract(id, "#result", signal), "blocked");
+const shot = await adapter.screenshot(id, signal);
+assert.ok(shot.objectRef.startsWith(`${businessId}/screenshots/${id}/`));
+await adapter.close(id);
+await assert.rejects(adapter.extract(id, "#result", signal));
+await assert.rejects(adapter.open(ulid(), site, signal, businessId, { ...policy, allowedDomains: ["denied.test"] }));
+
+const cancelled = new AbortController(); const cancelId = ulid();
+await adapter.open(cancelId, site, cancelled.signal, businessId, policy);
+cancelled.abort(); await Bun.sleep(300);
+await assert.rejects(adapter.extract(cancelId, "#result", signal));
+
+const timeoutId = ulid();
+await adapter.open(timeoutId, site, signal, businessId, { ...policy, timeoutMs: 3000 });
+await Bun.sleep(3200);
+await assert.rejects(adapter.extract(timeoutId, "#result", signal));
+
+const realtime = new InMemoryRealtimeBus();
+const coordinator = new BrowserCoordinator(adapter, () => policy, undefined, realtime);
+const context = { ...createTrustedBusinessContext({ businessId, principal: { kind: "system", service: "browser-integration" }, source: "internal_system", traceId: ulid(), capabilityGrants: ["browser.use"] }), runId: ulid() };
+const session = await coordinator.open(context, site);
+assert.deepEqual(await coordinator.act(context, session.id, "extract", { selector: "#result" }), { untrustedContent: "Ready", url: site });
+const privateShot = await coordinator.act(context, session.id, "screenshot") as { screenshotId: string; availableToClient: false };
+assert.match(privateShot.screenshotId, /^[0-9A-HJKMNP-TV-Z]{26}$/); assert.equal(privateShot.availableToClient, false);
+await coordinator.act(context, session.id, "close");
+const events = await realtime.replay(businessId);
+assert.ok(events.some((event) => event.type === "browser.started"));
+assert.ok(events.every((event) => !JSON.stringify(event.payload).includes("browser.test") && !JSON.stringify(event.payload).includes(shot.objectRef)));
+console.log("Controlled Chromium/CDP browser passed: open, extract, type, click, screenshot reference, close, policy denial, cancellation, timeout, and safe progress.");
