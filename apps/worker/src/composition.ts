@@ -7,7 +7,7 @@ import { AttachmentService, ElevenLabsAdapter, ElevenLabsHttpClient, FileObjectS
 import { FacebookMessengerAdapter, GraphMetaApi, InMemoryChannelRegistry, MessengerMediaDownloader, PostgresCredentialVault, PostgresMessengerAssetResolver, RegistryPresenceController } from "@agentos/channels";
 import { LayeredContextEngine } from "@agentos/context";
 import { DefaultKnowledgeParser } from "@agentos/knowledge";
-import { OpenAIResponsesProvider, OpenAIVisionProvider } from "@agentos/models";
+import { OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint } from "@agentos/models";
 import { PostgresAgentVersionRepository, PostgresRealtimeBus, PostgresRuntimeActionRepository, PostgresRuntimeContextSource, PostgresRuntimeDomainActions, PostgresRuntimeTraceRepository } from "@agentos/phase6";
 import { PostgresAttachmentRepository, PostgresBrowserRepository } from "@agentos/phase4-operations";
 import { ToolRegistry, type ToolExecutionContext } from "@agentos/tools";
@@ -32,7 +32,9 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
   const presence = new RegistryPresenceController(registry);
   const realtime = new PostgresRealtimeBus(db);
   const parser = new DefaultKnowledgeParser();
-  const attachmentService = new AttachmentService(storage, new MessengerMediaDownloader(vault, required("META_MEDIA_ALLOWED_HOSTS").split(",").map((host) => host.trim()).filter(Boolean)), new OpenAIVisionProvider(required("OPENAI_API_KEY"), required("OPENAI_VISION_MODEL")), process.env.ELEVENLABS_API_KEY ? new ElevenLabsAdapter(new ElevenLabsHttpClient(), async () => required("ELEVENLABS_API_KEY")) : null, { async extract(bytes, mimeType) { return parser.parse(mimeType === "application/pdf" ? "PDF" : mimeType.includes("wordprocessingml") ? "DOCX" : "TEXT", bytes); } }, realtime, undefined, new PostgresAttachmentRepository(db));
+  const openaiConfig = { apiKey: required("OPENAI_API_KEY"), ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}), ...(process.env.OPENAI_TIMEOUT_MS ? { timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS) } : {}), ...(process.env.OPENAI_FALLBACK_MODEL ? { fallbackModel: process.env.OPENAI_FALLBACK_MODEL } : {}) };
+  const visionModel = await verifyOpenAIEndpoint(openaiConfig, required("OPENAI_MODEL"), process.env.OPENAI_VISION_MODEL);
+  const attachmentService = new AttachmentService(storage, new MessengerMediaDownloader(vault, required("META_MEDIA_ALLOWED_HOSTS").split(",").map((host) => host.trim()).filter(Boolean)), new OpenAIVisionProvider(openaiConfig, visionModel), process.env.ELEVENLABS_API_KEY ? new ElevenLabsAdapter(new ElevenLabsHttpClient({ ...(process.env.ELEVENLABS_ENDPOINT ? { endpoint: process.env.ELEVENLABS_ENDPOINT } : {}), ...(process.env.ELEVENLABS_MODEL ? { model: process.env.ELEVENLABS_MODEL } : {}), ...(process.env.ELEVENLABS_TIMEOUT_MS ? { timeoutMs: Number(process.env.ELEVENLABS_TIMEOUT_MS) } : {}) }), async () => required("ELEVENLABS_API_KEY")) : null, { async extract(bytes, mimeType) { return parser.parse(mimeType === "application/pdf" ? "PDF" : mimeType.includes("wordprocessingml") ? "DOCX" : "TEXT", bytes); } }, realtime, undefined, new PostgresAttachmentRepository(db));
   const attachment: NonNullable<WorkerDependencies["attachment"]> = async (event, signal) => {
     if (event.type !== "attachment.received") return;
     const trusted = createTrustedBusinessContext({ businessId: event.businessId, principal: { kind: "system", service: "messenger-media" }, source: "internal_system", ...(event.conversationId ? { conversationId: event.conversationId } : {}), traceId: event.traceId, capabilityGrants: [] }, signal);
@@ -55,7 +57,7 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
   const runtime = new AgentRuntime({
     versions: new AgentVersionService(new PostgresAgentVersionRepository(db)),
     contextEngine: new LayeredContextEngine(new PostgresRuntimeContextSource(db)),
-    models: new OpenAIResponsesProvider(required("OPENAI_API_KEY")),
+    models: new OpenAIResponsesProvider(openaiConfig),
     tools,
     actions: new DeferredChannelActionExecutor(new PostgresRuntimeActionRepository(db), new PostgresRuntimeDomainActions(db)),
     traces: new PostgresRuntimeTraceRepository(db), realtime, presence,

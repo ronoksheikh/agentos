@@ -17,20 +17,30 @@ export interface AttachmentDownloader { download(source: Attachment, signal: Abo
 export interface VisionProvider { describe(bytes: Uint8Array, mimeType: string, signal: AbortSignal): Promise<{ text: string; confidence?: number; version: string; provider: string }>; }
 export interface AudioTranscriptionProvider { transcribe(bytes: Uint8Array, mimeType: string, signal: AbortSignal): Promise<{ text: string; language?: string; confidence?: number; version: string; provider: string }>; }
 export interface DocumentTextProvider { extract(bytes: Uint8Array, mimeType: string): Promise<string>; }
-export interface AudioHttpClient { transcribe(input: { bytes: Uint8Array; mimeType: string; credential: string; signal: AbortSignal }): Promise<{ text: string; language?: string; confidence?: number }>; }
+export interface AudioHttpClient { transcribe(input: { bytes: Uint8Array; mimeType: string; credential: string; signal: AbortSignal }): Promise<{ text: string; language?: string; confidence?: number; model?: string }>; }
 export class ElevenLabsHttpClient implements AudioHttpClient {
-  constructor(private readonly fetcher: typeof fetch = fetch) {}
+  private readonly endpoint: string;
+  private readonly model: string;
+  private readonly timeoutMs: number;
+  constructor(options: { endpoint?: string; model?: string; timeoutMs?: number; fetcher?: typeof fetch } = {}) {
+    const url = new URL(options.endpoint ?? "https://api.elevenlabs.io/v1/speech-to-text");
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Error("ELEVENLABS_ENDPOINT_INVALID");
+    this.endpoint = url.toString(); this.model = options.model ?? "scribe_v2"; this.timeoutMs = options.timeoutMs ?? 30_000;
+    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(this.model) || !Number.isInteger(this.timeoutMs) || this.timeoutMs < 1_000 || this.timeoutMs > 120_000) throw new Error("ELEVENLABS_CONFIGURATION_INVALID");
+    this.fetcher = options.fetcher ?? fetch;
+  }
+  private readonly fetcher: typeof fetch;
   async transcribe(input: { bytes: Uint8Array; mimeType: string; credential: string; signal: AbortSignal }) {
-    const form = new FormData(); form.set("model_id", "scribe_v2"); form.set("file", new Blob([input.bytes.slice().buffer], { type: input.mimeType }), "audio");
-    const response = await this.fetcher("https://api.elevenlabs.io/v1/speech-to-text", { method: "POST", headers: { "xi-api-key": input.credential }, body: form, signal: input.signal, redirect: "error" });
+    const form = new FormData(); form.set("model_id", this.model); form.set("file", new Blob([input.bytes.slice().buffer], { type: input.mimeType }), "audio");
+    const response = await this.fetcher(this.endpoint, { method: "POST", headers: { "xi-api-key": input.credential }, body: form, signal: AbortSignal.any([input.signal, AbortSignal.timeout(this.timeoutMs)]), redirect: "error" });
     if (!response.ok || Number(response.headers.get("content-length") ?? 0) > 65536) throw new Error("TRANSCRIPTION_FAILED");
     const body = await response.text(); if (body.length > 65536) throw new Error("TRANSCRIPT_TOO_LARGE");
     const parsed = z.object({ text: z.string().max(20000), language_code: z.string().optional(), language_probability: z.number().min(0).max(1).optional() }).parse(JSON.parse(body));
-    return { text: parsed.text, ...(parsed.language_code ? { language: parsed.language_code } : {}), ...(parsed.language_probability !== undefined ? { confidence: parsed.language_probability } : {}) };
+    return { text: parsed.text, ...(parsed.language_code ? { language: parsed.language_code } : {}), ...(parsed.language_probability !== undefined ? { confidence: parsed.language_probability } : {}), model: this.model };
   }
 }
 /** Vendor code remains an adapter; credentials are resolved just before the call. */
-export class ElevenLabsAdapter implements AudioTranscriptionProvider { constructor(private readonly client: AudioHttpClient, private readonly credential: () => Promise<string>) {} async transcribe(bytes: Uint8Array, mimeType: string, signal: AbortSignal) { const result = await this.client.transcribe({ bytes, mimeType, credential: await this.credential(), signal }); return { ...result, version: "elevenlabs-v1", provider: "elevenlabs" }; } }
+export class ElevenLabsAdapter implements AudioTranscriptionProvider { constructor(private readonly client: AudioHttpClient, private readonly credential: () => Promise<string>) {} async transcribe(bytes: Uint8Array, mimeType: string, signal: AbortSignal) { const result = await this.client.transcribe({ bytes, mimeType, credential: await this.credential(), signal }); return { text: result.text, ...(result.language ? { language: result.language } : {}), ...(result.confidence !== undefined ? { confidence: result.confidence } : {}), version: result.model ?? "elevenlabs-v1", provider: "elevenlabs" }; } }
 export class InMemoryObjectStorage implements ObjectStorage { readonly objects = new Map<string, Uint8Array>(); async put(key: string, bytes: Uint8Array) { this.objects.set(key, bytes.slice()); } async signedGet(key: string, expiresSeconds: number) { if (!this.objects.has(key) || expiresSeconds < 1 || expiresSeconds > 300) throw new Error("OBJECT_NOT_FOUND"); return `https://storage.invalid/signed/${encodeURIComponent(key)}?ttl=${expiresSeconds}`; } async delete(key: string) { this.objects.delete(key); } }
 export interface S3CompatibleClient { putObject(input: { bucket: string; key: string; body: Uint8Array; contentType: string }): Promise<void>; signedGetObject(input: { bucket: string; key: string; expiresSeconds: number }): Promise<string>; deleteObject(input: { bucket: string; key: string }): Promise<void>; }
 export class S3CompatibleObjectStorage implements ObjectStorage {
