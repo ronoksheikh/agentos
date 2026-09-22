@@ -8,7 +8,7 @@ export type ToolSafetyClass = z.infer<typeof toolSafetyClassSchema>;
 export type ToolPolicyOutcome = z.infer<typeof toolPolicyOutcomeSchema>;
 export interface ToolExecutionContext extends TrustedBusinessContext { runId: string; }
 export interface AgentTool<I = unknown, O = unknown> {
-  name: string; description: string; category: "memory" | "conversation" | "handoff" | "demo";
+  name: string; description: string; category: "memory" | "conversation" | "handoff" | "demo" | "knowledge" | "commerce" | "customer" | "web" | "browser" | "custom" | "goals";
   safetyClass: ToolSafetyClass; requiredCapabilities: string[]; inputSchema: z.ZodType<I>; outputSchema: z.ZodType<O>;
   redaction: { unsafeInputKeys: string[]; unsafeOutputKeys: string[] };
   execute(context: ToolExecutionContext, input: I): Promise<O>;
@@ -33,7 +33,7 @@ export class ToolRegistry {
     const safeInput = redactSafe(parsed, tool.redaction.unsafeInputKeys); const policy = await evaluator.evaluate(tool, context, configuredPolicy[tool.name]);
     if (policy === "DENY") return { toolCallId: call.id, toolName: call.name, status: "DENIED", safeInput, safeError: { code: "TOOL_DENIED", message: "Tool policy denied execution" } };
     if (policy === "REQUIRE_HUMAN_APPROVAL") return { toolCallId: call.id, toolName: call.name, status: "REQUIRES_APPROVAL", safeInput, safeError: { code: "HUMAN_APPROVAL_REQUIRED", message: "Tool requires human approval" } };
-    try { const output = tool.outputSchema.parse(await tool.execute(context, parsed)); return { toolCallId: call.id, toolName: call.name, status: "COMPLETED", safeInput, safeOutput: redactSafe(output, tool.redaction.unsafeOutputKeys) }; }
+    try { if (context.cancellationSignal.aborted) throw new Error("CANCELLED"); const output = tool.outputSchema.parse(await tool.execute(context, parsed)); if (context.cancellationSignal.aborted) throw new Error("CANCELLED"); return { toolCallId: call.id, toolName: call.name, status: "COMPLETED", safeInput, safeOutput: redactSafe(output, tool.redaction.unsafeOutputKeys) }; }
     catch { return { toolCallId: call.id, toolName: call.name, status: "FAILED", safeInput, safeError: { code: "TOOL_EXECUTION_FAILED", message: "Tool execution failed safely" } }; }
   }
 }
