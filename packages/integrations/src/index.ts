@@ -1,0 +1,54 @@
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
+import { request } from "node:https";
+import { ulid } from "ulid";
+import { z } from "zod";
+import { ulidSchema, type TrustedBusinessContext } from "@agentos/shared";
+import type { AgentTool, ToolExecutionContext } from "@agentos/tools";
+
+export const customToolSchema = z.object({ id: ulidSchema, businessId: ulidSchema, name: z.string().regex(/^[a-z][a-z0-9_]{2,63}$/), description: z.string().min(1).max(500), type: z.enum(["HTTP_API", "WEBHOOK_ACTION"]), method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]), baseUrl: z.url(), pathTemplate: z.string().startsWith("/").max(500), inputSchema: z.record(z.string(), z.enum(["string", "number", "boolean"])), outputSchema: z.record(z.string(), z.enum(["string", "number", "boolean"])), outputMapping: z.record(z.string(), z.string()), timeoutMs: z.number().int().min(100).max(15000), allowedHosts: z.array(z.string().min(1)).min(1).max(20), safeHeaders: z.record(z.string(), z.string()).default({}), credentialRef: ulidSchema.nullable(), requiredCapabilities: z.array(z.string()).min(1), allowedAgentIds: z.array(ulidSchema), safetyClass: z.enum(["READ", "WRITE", "SENSITIVE", "DESTRUCTIVE"]), enabled: z.boolean(), testState: z.enum(["UNTESTED", "PASSED", "FAILED"]), maxRequestBytes: z.number().int().min(1).max(65536).default(16384), maxResponseBytes: z.number().int().min(1).max(262144).default(65536), createdAt: z.string(), updatedAt: z.string() });
+export type CustomToolDefinition = z.infer<typeof customToolSchema>;
+export interface CredentialVault { resolve(context: TrustedBusinessContext, reference: string): Promise<string>; }
+export interface HttpResponse { status: number; body: Uint8Array; }
+export interface SafeHttpTransport { send(input: { url: URL; method: string; headers: Record<string, string>; body?: Uint8Array; timeoutMs: number; maxResponseBytes: number; signal: AbortSignal }): Promise<HttpResponse>; }
+const ipv4Private = (address: string) => { const n = address.split(".").map(Number); const [a, b] = n; return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 172 && b! >= 16 && b! <= 31 || a === 192 && b === 168 || a === 100 && b! >= 64 && b! <= 127 || a === 192 && b === 0 || a === 198 && (b === 18 || b === 19) || a! >= 224; };
+export function assertPublicAddress(address: string) { const kind = isIP(address); if (kind === 4 && !ipv4Private(address)) return; if (kind === 6 && /^2[0-9a-f]{3}:/i.test(address) && !address.toLowerCase().includes("::ffff:")) return; throw new Error("PRIVATE_NETWORK_TARGET"); }
+export function assertApprovedUrl(raw: string, allowedHosts: readonly string[]): URL { const url = new URL(raw); if (url.protocol !== "https:" || url.username || url.password || url.port && url.port !== "443" || url.hash || !allowedHosts.some((host) => host.toLowerCase() === url.hostname.toLowerCase()) || isIP(url.hostname)) throw new Error("URL_POLICY_DENIED"); return url; }
+const addressFor = async (url: URL) => { const answers = await lookup(url.hostname, { all: true, verbatim: true }); if (!answers.length) throw new Error("DNS_FAILED"); answers.forEach((answer) => assertPublicAddress(answer.address)); return answers[0]!; };
+
+/** HTTPS transport pins the validated DNS answer for the socket and never follows redirects. */
+export class PinnedHttpsTransport implements SafeHttpTransport {
+  async send(input: { url: URL; method: string; headers: Record<string, string>; body?: Uint8Array; timeoutMs: number; maxResponseBytes: number; signal: AbortSignal }): Promise<HttpResponse> {
+    const address = await addressFor(input.url);
+    return new Promise((resolve, reject) => {
+      const req = request(input.url, { method: input.method, headers: input.headers, timeout: input.timeoutMs, signal: input.signal, lookup: (_hostname, _options, callback) => callback(null, address.address, address.family) }, (response) => {
+        if ((response.statusCode ?? 500) >= 300 && (response.statusCode ?? 500) < 400) { response.resume(); reject(new Error("REDIRECT_DENIED")); return; }
+        const pieces: Buffer[] = []; let size = 0;
+        response.on("data", (chunk: Buffer) => { size += chunk.byteLength; if (size > input.maxResponseBytes) { req.destroy(new Error("RESPONSE_TOO_LARGE")); return; } pieces.push(chunk); });
+        response.on("end", () => resolve({ status: response.statusCode ?? 500, body: Buffer.concat(pieces) })); response.on("error", reject);
+      });
+      req.on("timeout", () => req.destroy(new Error("REQUEST_TIMEOUT"))); req.on("error", reject); if (input.body) req.write(input.body); req.end();
+    });
+  }
+}
+function fields(schema: Record<string, "string" | "number" | "boolean">, write = false) { const shape: Record<string, z.ZodTypeAny> = {}; for (const [key, type] of Object.entries(schema)) shape[key] = type === "string" ? z.string().max(2000) : type === "number" ? z.number().finite() : z.boolean(); if (write) shape.idempotencyKey = z.string().min(1).max(200); return z.object(shape).strict(); }
+export interface CustomToolAudit { id: string; businessId: string; definitionId: string; runId: string; outcome: "COMPLETED" | "FAILED" | "DENIED"; at: string; safeCode: string; }
+export class CustomToolCatalog {
+  readonly definitions = new Map<string, CustomToolDefinition>(); readonly audits: CustomToolAudit[] = []; private readonly outcomes = new Map<string, unknown>();
+  constructor(private readonly vault: CredentialVault, private readonly transport: SafeHttpTransport = new PinnedHttpsTransport(), private readonly clock: () => Date = () => new Date()) {}
+  save(context: TrustedBusinessContext, input: Omit<CustomToolDefinition, "id" | "businessId" | "createdAt" | "updatedAt" | "testState"> & { id?: string }) { if (!context.capabilityGrants.includes("custom_tool.manage")) throw new Error("FORBIDDEN"); const prior = input.id ? this.definitions.get(input.id) : undefined; if (prior && prior.businessId !== context.businessId) throw new Error("TOOL_NOT_FOUND"); assertApprovedUrl(input.baseUrl, input.allowedHosts); if (input.pathTemplate.includes("{{secret") || Object.entries(input.safeHeaders).some(([name, value]) => !["accept", "content-type"].includes(name.toLowerCase()) || !["application/json", "text/plain"].includes(value.toLowerCase()))) throw new Error("RAW_SECRET_DENIED"); const now = this.clock().toISOString(); const definition = customToolSchema.parse({ ...input, id: prior?.id ?? ulid(), businessId: context.businessId, testState: prior?.testState ?? "UNTESTED", createdAt: prior?.createdAt ?? now, updatedAt: now }); this.definitions.set(definition.id, definition); return structuredClone(definition); }
+  list(context: TrustedBusinessContext) { return [...this.definitions.values()].filter((d) => d.businessId === context.businessId).map((d) => structuredClone(d)); }
+  get(context: TrustedBusinessContext, id: string) { const d = this.definitions.get(id); if (!d || d.businessId !== context.businessId) throw new Error("TOOL_NOT_FOUND"); return structuredClone(d); }
+  setEnabled(context: TrustedBusinessContext, id: string, enabled: boolean) { if (!context.capabilityGrants.includes("custom_tool.manage")) throw new Error("FORBIDDEN"); const d = this.get(context, id); d.enabled = enabled; d.updatedAt = this.clock().toISOString(); this.definitions.set(id, d); return d; }
+  async execute(context: ToolExecutionContext, id: string, unsafeInput: unknown): Promise<unknown> {
+    const d = this.get(context, id); if (!d.enabled || !d.allowedAgentIds.includes(context.agentId ?? "") || !d.requiredCapabilities.every((grant) => context.capabilityGrants.includes(grant))) throw new Error("CUSTOM_TOOL_DENIED");
+    const input = fields(d.inputSchema, d.safetyClass !== "READ").parse(unsafeInput); const intentKey = typeof input.idempotencyKey === "string" ? input.idempotencyKey : null; if (d.safetyClass !== "READ" && !intentKey) throw new Error("IDEMPOTENCY_REQUIRED"); const outcomeKey = `${context.businessId}:${d.id}:${intentKey}`; if (intentKey && this.outcomes.has(outcomeKey)) return structuredClone(this.outcomes.get(outcomeKey));
+    const path = d.pathTemplate.replace(/\{([a-z][a-z0-9_]*)\}/g, (_match, key: string) => encodeURIComponent(String(input[key] ?? ""))); if (path.includes("{")) throw new Error("INVALID_PATH_TEMPLATE"); const url = assertApprovedUrl(new URL(path, d.baseUrl).toString(), d.allowedHosts);
+    const headers: Record<string, string> = { "content-type": "application/json" }; for (const [name, value] of Object.entries(d.safeHeaders)) { if (!/^[a-z0-9-]{1,50}$/i.test(name) || /authorization|cookie|secret|token|api.?key/i.test(name) || /[\r\n]/.test(value)) throw new Error("UNSAFE_HEADER"); headers[name] = value; }
+    if (d.credentialRef) headers.authorization = `Bearer ${await this.vault.resolve(context, d.credentialRef)}`;
+    const body = d.method === "GET" ? undefined : new TextEncoder().encode(JSON.stringify(input)); if (body && body.byteLength > d.maxRequestBytes) throw new Error("REQUEST_TOO_LARGE");
+    try { const response = await this.transport.send({ url, method: d.method, headers, ...(body ? { body } : {}), timeoutMs: d.timeoutMs, maxResponseBytes: d.maxResponseBytes, signal: context.cancellationSignal }); if (response.body.byteLength > d.maxResponseBytes) throw new Error("RESPONSE_TOO_LARGE"); if (response.status < 200 || response.status >= 300) throw new Error("UPSTREAM_FAILED"); const data = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>; const mapped: Record<string, unknown> = {}; for (const [target, source] of Object.entries(d.outputMapping)) mapped[target] = data[source]; const result = fields(d.outputSchema).parse(mapped); if (intentKey) this.outcomes.set(outcomeKey, structuredClone(result)); this.audits.push({ id: ulid(), businessId: context.businessId, definitionId: id, runId: context.runId, outcome: "COMPLETED", at: this.clock().toISOString(), safeCode: "OK" }); return result; }
+    catch (error) { this.audits.push({ id: ulid(), businessId: context.businessId, definitionId: id, runId: context.runId, outcome: "FAILED", at: this.clock().toISOString(), safeCode: error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : "EXECUTION_FAILED" }); throw new Error("CUSTOM_TOOL_FAILED"); }
+  }
+  asAgentTool(context: TrustedBusinessContext, id: string): AgentTool { const d = this.get(context, id); return { name: d.name, description: d.description, category: "custom", safetyClass: d.safetyClass, requiredCapabilities: d.requiredCapabilities, inputSchema: fields(d.inputSchema, d.safetyClass !== "READ"), outputSchema: fields(d.outputSchema), redaction: { unsafeInputKeys: ["authorization", "credential"], unsafeOutputKeys: ["authorization", "credential"] }, execute: (execution, input) => this.execute(execution, d.id, input) }; }
+}

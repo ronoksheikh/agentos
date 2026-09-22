@@ -6,6 +6,7 @@ export const memorySchema = z.object({
   id: ulidSchema, businessId: ulidSchema, customerId: ulidSchema.optional(), conversationId: ulidSchema.optional(), type: z.string().min(1), content: z.string().min(1),
   importance: z.number().min(0).max(1), confidence: z.number().min(0).max(1), sourceMessageIds: z.array(ulidSchema), createdBy: z.string().min(1),
   validFrom: isoDateTimeSchema, expiresAt: isoDateTimeSchema.nullable(), supersededBy: ulidSchema.nullable(), createdAt: isoDateTimeSchema, updatedAt: isoDateTimeSchema,
+  sourceKind: z.enum(["MESSAGE", "MANUAL_NOTE", "TOOL", "OTHER"]).optional(), sourceRef: z.string().max(500).optional(),
 });
 export type Memory = z.infer<typeof memorySchema>;
 export interface MemoryRepository {
@@ -18,6 +19,9 @@ export interface MemoryRepository {
 export class MemoryService {
   constructor(private readonly repository: MemoryRepository, private readonly clock: () => Date = () => new Date()) {}
   async remember(context: TrustedBusinessContext, input: Omit<Memory, "id" | "businessId" | "validFrom" | "supersededBy" | "createdAt" | "updatedAt">): Promise<Memory> {
+    const active = await this.repository.listActive(context, { ...(input.customerId ? { customerId: input.customerId } : {}), ...(input.conversationId ? { conversationId: input.conversationId } : {}) }, this.clock());
+    const duplicate = active.find((memory) => memory.type === input.type && memory.content.trim().toLocaleLowerCase() === input.content.trim().toLocaleLowerCase());
+    if (duplicate) return duplicate;
     const now = this.clock().toISOString();
     const memory = memorySchema.parse({ ...input, id: ulid(), businessId: context.businessId, validFrom: now, supersededBy: null, createdAt: now, updatedAt: now });
     await this.repository.create(context, memory); return memory;
