@@ -38,10 +38,12 @@ try {
   domain.collect(context, pending.id, { paymentMethod: "COD", deliveryMethod: "HOME" });
   const confirmed = await domain.confirm(context, pending.id); await durable.savePending(context, confirmed);
   assert.equal((await durable.loadPending(context, pending.id)).state, "CONFIRMED");
+  assert.equal((await durable.listPending(context))[0]?.id, pending.id);
   await assert.rejects(durable.loadPending(other, pending.id), /PENDING_ORDER_NOT_FOUND/);
   const created = await domain.createOrder(context, pending.id, "durable-intent");
   await assert.rejects(durable.commitOrder(other, created.order, "foreign-intent"), /ORDER_SNAPSHOT_INVALID/);
   assert.deepEqual(await durable.commitOrder(context, created.order, "durable-intent"), { orderId: created.order.id, duplicate: false });
+  assert.equal((await durable.listPending(context)).some((item) => item.id === pending.id), false);
   assert.deepEqual(await durable.commitOrder(context, created.order, "another-intent"), { orderId: created.order.id, duplicate: true });
   assert.equal(await durable.setNotificationState(context, created.order.id, "FAILED"), "FAILED");
   assert.equal(await durable.setNotificationState(context, created.order.id, "SENT"), "SENT");

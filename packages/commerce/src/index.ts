@@ -38,6 +38,7 @@ export class OrderService {
   constructor(private readonly adapter: CommerceAdapter, private readonly clock: () => Date = () => new Date(), private readonly ownership: (context: TrustedBusinessContext) => Promise<"AI_ACTIVE" | "HUMAN_ACTIVE"> = async () => "AI_ACTIVE") {}
   setPolicy(context: TrustedBusinessContext, input: unknown) { const policy = orderPolicySchema.parse(input); this.policies.set(context.businessId, policy); return policy; }
   getPolicy(context: TrustedBusinessContext) { return this.policies.get(context.businessId) ?? null; }
+  listPending(context: TrustedBusinessContext) { return [...this.pending.values()].filter((order) => order.businessId === context.businessId && (!context.conversationId || order.conversationId === context.conversationId) && !["CREATED", "CANCELLED", "EXPIRED"].includes(order.state) && Date.parse(order.expiresAt) > this.clock().getTime()).map((order) => structuredClone(order)); }
   private policy(context: TrustedBusinessContext) { const policy = this.getPolicy(context); if (!policy?.enabled) throw new Error("ORDERING_DISABLED"); return policy; }
   private now() { return this.clock().toISOString(); }
   private audit(context: TrustedBusinessContext, orderId: string, action: string, metadata: OrderAudit["safeMetadata"] = {}) { this.audits.push({ id: ulid(), businessId: context.businessId, orderId, actorId: context.principal.kind === "user" ? context.principal.userId : context.principal.kind, action, at: this.now(), safeMetadata: metadata }); }

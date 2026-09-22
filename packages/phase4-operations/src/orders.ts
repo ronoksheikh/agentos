@@ -1,5 +1,5 @@
 import { ulid } from "ulid";
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt, notInArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "@agentos/database";
 import { orderSchema, pendingOrderSchema, type Order, type PendingOrder } from "@agentos/commerce";
@@ -28,6 +28,10 @@ export class PostgresOrderRepository {
     const row = (await this.db.select().from(schema.pendingOrders).where(and(eq(schema.pendingOrders.id, id), eq(schema.pendingOrders.businessId, context.businessId), ...(context.conversationId ? [eq(schema.pendingOrders.conversationId, context.conversationId)] : []))).limit(1))[0];
     if (!row) throw new Error("PENDING_ORDER_NOT_FOUND");
     return pendingOrderSchema.parse({ ...row, expiresAt: row.expiresAt.toISOString(), createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() });
+  }
+  async listPending(context: TrustedBusinessContext): Promise<PendingOrder[]> {
+    const rows = await this.db.select().from(schema.pendingOrders).where(and(eq(schema.pendingOrders.businessId, context.businessId), ...(context.conversationId ? [eq(schema.pendingOrders.conversationId, context.conversationId)] : []), notInArray(schema.pendingOrders.state, ["CREATED", "CANCELLED", "EXPIRED"]), gt(schema.pendingOrders.expiresAt, new Date()))).limit(20);
+    return rows.map((row) => pendingOrderSchema.parse({ ...row, expiresAt: row.expiresAt.toISOString(), createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() }));
   }
   async commitOrder(context: TrustedBusinessContext, unsafe: unknown, intentKey: string): Promise<{ orderId: string; duplicate: boolean }> {
     if (!context.capabilityGrants.includes("commerce.write") || !intentKey || intentKey.length > 200) throw new Error("ORDER_WRITE_DENIED");
