@@ -108,19 +108,21 @@ export class FacebookMessengerAdapter implements ChannelAdapter {
     if (!row.thread.lastCustomerMessageAt || Date.now() - row.thread.lastCustomerMessageAt.getTime() > 24 * 3600_000) return { status: "SKIPPED" as const, safeReason: "META_STANDARD_WINDOW_CLOSED" };
     if (["ReplyToMessage", "ReactToMessage", "SendFile"].includes(action.type)) return { status: "SKIPPED" as const, safeReason: "CAPABILITY_UNAVAILABLE" };
     let message: Record<string, unknown>;
-    if (action.type === "SendMessage") message = { text: action.text };
-    else if (action.type === "SendProduct") message = { text: `${action.fallbackText}${action.url ? `\n${action.url}` : ""}`.slice(0, 20000) };
+    if (action.type === "SendMessage") { if (action.text.length > 2000) return { status: "SKIPPED" as const, safeReason: "META_TEXT_LIMIT" }; message = { text: action.text }; }
+    else if (action.type === "SendProduct") message = { text: `${action.fallbackText}${action.url ? `\n${action.url}` : ""}`.slice(0, 2000) };
     else if (action.type === "SendImage") {
       if (!this.assets) return { status: "SKIPPED" as const, safeReason: "ASSET_RESOLVER_UNAVAILABLE" };
       const url = await this.assets.signedUrl(context, action.assetId);
       if (new URL(url).protocol !== "https:") return { status: "SKIPPED" as const, safeReason: "ASSET_URL_INVALID" };
       message = { attachment: { type: "image", payload: { url } } };
     } else return { status: "SKIPPED" as const, safeReason: "CAPABILITY_UNAVAILABLE" };
-    const inserted = await this.db.insert(messengerSends).values({ id: ulid(), businessId: context.businessId, connectionId: connection.id, conversationId: context.conversationId!, idempotencyKey: action.idempotencyKey, actionId: action.id, state: "SENDING" }).onConflictDoNothing().returning({ id: messengerSends.id });
+    let inserted = await this.db.insert(messengerSends).values({ id: ulid(), businessId: context.businessId, connectionId: connection.id, conversationId: context.conversationId!, idempotencyKey: action.idempotencyKey, actionId: action.id, state: "SENDING" }).onConflictDoNothing().returning({ id: messengerSends.id });
     if (!inserted.length) {
       const prior = (await this.db.select().from(messengerSends).where(and(eq(messengerSends.businessId, context.businessId), eq(messengerSends.connectionId, connection.id), eq(messengerSends.idempotencyKey, action.idempotencyKey))).limit(1))[0];
       if (prior?.actionId !== action.id || prior?.conversationId !== context.conversationId) throw new Error("IDEMPOTENCY_CONFLICT");
-      return prior.state === "COMPLETED" ? { status: "EXECUTED" as const, ...(prior.externalMessageId ? { externalId: prior.externalMessageId } : {}) } : { status: "SKIPPED" as const, safeReason: "RECONCILIATION_REQUIRED" };
+      if (prior.state === "COMPLETED") return { status: "EXECUTED" as const, ...(prior.externalMessageId ? { externalId: prior.externalMessageId } : {}) };
+      if (prior.state === "FAILED" && prior.safeCode === "META_RATE_LIMIT") inserted = await this.db.update(messengerSends).set({ state: "SENDING", safeCode: null, updatedAt: new Date() }).where(and(eq(messengerSends.id, prior.id), eq(messengerSends.businessId, context.businessId), eq(messengerSends.state, "FAILED"))).returning({ id: messengerSends.id });
+      if (!inserted.length) return { status: "SKIPPED" as const, safeReason: "RECONCILIATION_REQUIRED" };
     }
     try {
       const sent = await this.api.send(connection.externalPageId, await this.vault.resolve(context, connection.credentialRefId, "meta_page_token"), { recipient: { id: row.thread.senderId }, messaging_type: "RESPONSE", message });
@@ -134,6 +136,7 @@ export class FacebookMessengerAdapter implements ChannelAdapter {
       const definite = error instanceof MetaApiError && ["META_AUTH", "META_PERMISSION", "META_RATE_LIMIT", "META_REJECTED"].includes(error.safeCode);
       await this.db.update(messengerSends).set({ state: definite ? "FAILED" : "UNKNOWN", safeCode: error instanceof MetaApiError ? error.safeCode : "EXTERNAL_OUTCOME_UNKNOWN", updatedAt: new Date() }).where(eq(messengerSends.id, inserted[0]!.id));
       if (error instanceof MetaApiError && error.safeCode === "META_AUTH") await this.db.update(channelConnections).set({ state: "NEEDS_REAUTHORIZATION", paused: true, lastErrorCode: "META_AUTH", updatedAt: new Date() }).where(and(eq(channelConnections.id, connection.id), eq(channelConnections.businessId, context.businessId)));
+      if (error instanceof MetaApiError && error.safeCode === "META_RATE_LIMIT") throw Object.assign(new Error("CHANNEL_RATE_LIMIT"), { code: "CHANNEL_RATE_LIMIT", retryAfterMs: error.retryAfterMs ?? 1000 });
       if (definite) return { status: "SKIPPED" as const, safeReason: error.safeCode };
       throw new Error("EXTERNAL_OUTCOME_UNKNOWN");
     }

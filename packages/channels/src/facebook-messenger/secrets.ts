@@ -47,7 +47,7 @@ export class PostgresCredentialVault {
     return Buffer.concat([decipher.update(Buffer.from(row.secret.ciphertext, "base64")), decipher.final()]).toString("utf8");
   }
   async revoke(context: TrustedBusinessContext, id: string, kind: string) {
-    if (!context.capabilityGrants.includes("channel.manage")) throw new Error("CREDENTIAL_DENIED");
+    if (!(context.capabilityGrants.includes("channel.manage") || context.source === "internal_system" && kind === "meta_attachment_url")) throw new Error("CREDENTIAL_DENIED");
     await this.db.transaction(async (tx) => {
       const row = (await tx.update(credentialReferences).set({ status: "REVOKED", updatedAt: new Date() }).where(and(eq(credentialReferences.id, id), eq(credentialReferences.businessId, context.businessId), eq(credentialReferences.kind, kind))).returning({ id: credentialReferences.id }))[0];
       if (!row) throw new Error("CREDENTIAL_NOT_FOUND");

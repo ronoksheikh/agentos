@@ -3,3 +3,4 @@ export { GraphMetaApi, MetaApiError, META_GRAPH_VERSION, type MetaApi } from "./
 export { PostgresCredentialVault } from "./secrets";
 export { MetaConnectionService } from "./connections";
 export { MessengerWebhook } from "./webhook";
+export { MessengerMediaDownloader, PostgresMessengerAssetResolver } from "./media";

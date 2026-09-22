@@ -13,9 +13,9 @@ export class PostgresAttachmentRepository implements AttachmentPersistence {
     await this.db.transaction(async (tx) => {
       const prior = (await tx.select({ businessId: schema.attachments.businessId }).from(schema.attachments).where(eq(schema.attachments.id, record.id)).limit(1))[0];
       if (prior && prior.businessId !== record.businessId) throw new Error("ATTACHMENT_SCOPE_INVALID");
-      const values = { status: record.status, contentHash: record.contentHash, objectKey: record.objectKey, errorCode: record.errorCode, retentionUntil: record.retentionUntil ? new Date(record.retentionUntil) : null, updatedAt: new Date(record.updatedAt) };
+      const values = { status: record.status, sizeBytes: record.sizeBytes, mimeType: record.mimeType, contentHash: record.contentHash, objectKey: record.objectKey, errorCode: record.errorCode, retentionUntil: record.retentionUntil ? new Date(record.retentionUntil) : null, updatedAt: new Date(record.updatedAt) };
       if (prior) await tx.update(schema.attachments).set(values).where(and(eq(schema.attachments.id, record.id), eq(schema.attachments.businessId, record.businessId)));
-      else await tx.insert(schema.attachments).values({ id: record.id, businessId: record.businessId, conversationId: record.conversationId, source: record.source, sourceRef: record.sourceRef, kind: record.kind, mimeType: record.mimeType, sizeBytes: record.sizeBytes, ...values, createdAt: new Date(record.createdAt) });
+      else await tx.insert(schema.attachments).values({ id: record.id, businessId: record.businessId, conversationId: record.conversationId, source: record.source, sourceRef: record.sourceRef, kind: record.kind, ...values, createdAt: new Date(record.createdAt) });
       for (const artifact of artifacts) await tx.insert(schema.attachmentArtifacts).values({ id: artifact.id, businessId: record.businessId, attachmentId: record.id, kind: artifact.kind, content: artifact.content, language: artifact.language, confidence: artifact.confidence, provider: artifact.provider, version: artifact.version, sourceRef: artifact.sourceRef, createdAt: new Date(artifact.createdAt) }).onConflictDoNothing();
     });
   }

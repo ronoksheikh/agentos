@@ -27,14 +27,14 @@ export class GraphMetaApi implements MetaApi {
   constructor(private readonly appId: string, private readonly appSecret: string, private readonly version = META_GRAPH_VERSION, private readonly fetcher: typeof fetch = fetch) {
     if (!/^v\d+\.0$/.test(version)) throw new Error("META_VERSION_INVALID");
   }
-  private async call<T>(path: string, token: string | null, options: { method?: "GET" | "POST"; body?: Record<string, unknown> } = {}): Promise<T> {
+  private async call<T>(path: string, token: string | null, options: { method?: "GET" | "POST"; body?: Record<string, unknown>; form?: boolean } = {}): Promise<T> {
     const url = new URL(`https://graph.facebook.com/${this.version}/${path}`);
-    const response = await this.fetcher(url, { method: options.method ?? "GET", headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(options.body ? { "content-type": "application/json" } : {}) }, ...(options.body ? { body: JSON.stringify(options.body) } : {}), signal: AbortSignal.timeout(8000), redirect: "error" }).catch(() => { throw new MetaApiError("META_TRANSIENT"); });
+    const response = await this.fetcher(url, { method: options.method ?? "GET", headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(options.body ? { "content-type": options.form ? "application/x-www-form-urlencoded" : "application/json" } : {}) }, ...(options.body ? { body: options.form ? new URLSearchParams(Object.entries(options.body).map(([key, value]) => [key, String(value)])).toString() : JSON.stringify(options.body) } : {}), signal: AbortSignal.timeout(8000), redirect: "error" }).catch(() => { throw new MetaApiError("META_TRANSIENT"); });
     const parsed: unknown = await response.json().catch(() => ({}));
     if (!response.ok) {
       const code = typeof parsed === "object" && parsed !== null && "error" in parsed && typeof parsed.error === "object" && parsed.error !== null && "code" in parsed.error ? Number(parsed.error.code) : undefined;
-      const retryHeader = response.headers.get("retry-after");
-      throw new MetaApiError(errorCode(response.status, code), retryHeader ? Math.min(120_000, Math.max(1000, Number(retryHeader) * 1000)) : undefined);
+      const retryHeader = response.headers.get("retry-after"); const retrySeconds = retryHeader ? Number(retryHeader) : NaN;
+      throw new MetaApiError(errorCode(response.status, code), Number.isFinite(retrySeconds) ? Math.min(120_000, Math.max(1000, retrySeconds * 1000)) : undefined);
     }
     return parsed as T;
   }
@@ -52,7 +52,7 @@ export class GraphMetaApi implements MetaApi {
     return z.object({ id: z.string(), name: z.string() }).parse(result);
   }
   async subscribePage(pageId: string, pageToken: string) {
-    const result = await this.call<unknown>(`${encodeURIComponent(pageId)}/subscribed_apps`, pageToken, { method: "POST", body: { subscribed_fields: ["messages", "message_deliveries", "message_reads", "messaging_postbacks"] } });
+    const result = await this.call<unknown>(`${encodeURIComponent(pageId)}/subscribed_apps`, pageToken, { method: "POST", body: { subscribed_fields: "messages,message_deliveries,message_reads,messaging_postbacks" }, form: true });
     return z.object({ success: z.boolean() }).parse(result).success;
   }
   async isSubscribed(pageId: string, pageToken: string) {

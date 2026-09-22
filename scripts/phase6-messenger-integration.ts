@@ -5,12 +5,15 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { and, eq } from "drizzle-orm";
 import { ulid } from "ulid";
 import * as schema from "@agentos/database";
+import { AttachmentService, FileObjectStorage } from "@agentos/attachments";
 import { AgentRuntime } from "@agentos/agent-runtime";
 import { AgentVersionService } from "@agentos/agents";
 import { DeferredChannelActionExecutor } from "@agentos/actions";
-import { FacebookMessengerAdapter, InMemoryChannelRegistry, MessengerWebhook, MetaConnectionService, PostgresCredentialVault, RegistryPresenceController, type MetaApi } from "@agentos/channels";
+import { FacebookMessengerAdapter, InMemoryChannelRegistry, MessengerMediaDownloader, MessengerWebhook, MetaApiError, MetaConnectionService, PostgresCredentialVault, RegistryPresenceController, type MetaApi } from "@agentos/channels";
 import { LayeredContextEngine } from "@agentos/context";
+import { orderSchema, pendingOrderSchema } from "@agentos/commerce";
 import { FakeModelProvider } from "@agentos/models";
+import { PostgresAttachmentRepository, PostgresOrderRepository } from "@agentos/phase4-operations";
 import { PostgresAgentVersionRepository, PostgresRealtimeBus, PostgresRuntimeActionRepository, PostgresRuntimeContextSource, PostgresRuntimeDomainActions, PostgresRuntimeTraceRepository } from "@agentos/phase6";
 import { createTrustedBusinessContext } from "@agentos/shared";
 import { ToolRegistry } from "@agentos/tools";
@@ -21,16 +24,20 @@ const databaseUrl = process.env.DATABASE_URL; const redisUrl = process.env.REDIS
 if (!databaseUrl || !redisUrl) throw new Error("DATABASE_URL and REDIS_URL required");
 const pool = new Pool({ connectionString: databaseUrl }); const db = drizzle(pool);
 const businessId = ulid(); const otherBusinessId = ulid(); const agentId = ulid(); const versionId = ulid(); const userId = ulid();
-const pageId = "123456789012345"; const appId = "987654321012345"; const appSecret = "phase6-meta-app-secret"; const verifyToken = "phase6-verify-token";
+const numericId = () => String(100_000_000_000_000n + randomBytes(8).readBigUInt64BE() % 900_000_000_000_000n);
+const pageId = numericId(); const oauthPageId = numericId(); const appId = "987654321012345"; const appSecret = "phase6-meta-app-secret"; const verifyToken = "phase6-verify-token";
 const pageToken = "phase6-page-token-write-only-123";
 const bodies: Record<string, unknown>[] = [];
+let rateLimitNext = false;
+let unknownNext = false;
+let authFailureNext = false;
 const api: MetaApi = {
   async exchangeCode() { return "phase6-user-token"; },
-  async listPages() { return [{ id: "333333333333333", name: "OAuth Page", accessToken: "oauth-page-token-1234567890", tasks: ["MESSAGE"] }]; },
+  async listPages() { return [{ id: oauthPageId, name: "OAuth Page", accessToken: "oauth-page-token-1234567890", tasks: ["MESSAGE"] }]; },
   async verifyPage(id) { return { id, name: "Fixture Page" }; },
   async subscribePage() { return true; },
   async isSubscribed() { return true; },
-  async send(_page, _token, body) { bodies.push(body); return "message" in body ? { messageId: `sent-${bodies.length}` } : {}; },
+  async send(_page, _token, body) { bodies.push(body); if (rateLimitNext && "message" in body && JSON.stringify(body).includes("Agent reply")) { rateLimitNext = false; throw new MetaApiError("META_RATE_LIMIT", 1000); } if (unknownNext && "message" in body && JSON.stringify(body).includes("Ambiguous send")) { unknownNext = false; throw new Error("network lost after send"); } if (authFailureNext && "message" in body && JSON.stringify(body).includes("Expired token")) { authFailureNext = false; throw new MetaApiError("META_AUTH"); } return "message" in body ? { messageId: `sent-${bodies.length}` } : {}; },
 };
 let stop: (() => Promise<void>) | undefined;
 try {
@@ -53,11 +60,12 @@ try {
   await service.subscribePage(agency, saved.id);
   await webhook.handshake(new URL(`https://agentos.example/api/webhooks/meta/messenger?hub.mode=subscribe&hub.verify_token=${verifyToken}&hub.challenge=hello`));
   await service.verifyWebhook(agency, saved.id);
-  const post = async (mid: string, sender: string, signatureValid = true) => {
-    const body = new TextEncoder().encode(JSON.stringify({ object: "page", entry: [{ id: pageId, messaging: [{ sender: { id: sender }, recipient: { id: pageId }, timestamp: Date.now(), message: { mid, text: "Hello from Messenger" } }] }] }));
+  const postNotification = async (notification: Record<string, unknown>, signatureValid = true) => {
+    const body = new TextEncoder().encode(JSON.stringify({ object: "page", entry: [{ id: pageId, messaging: [notification] }] }));
     const signature = `sha256=${createHmac("sha256", signatureValid ? appSecret : "wrong").update(body).digest("hex")}`;
     return webhook.receive(new Headers({ "x-hub-signature-256": signature }), body);
   };
+  const post = (mid: string, sender: string, signatureValid = true, image = false) => postNotification({ sender: { id: sender }, recipient: { id: pageId }, timestamp: Date.now(), message: { mid, text: "Hello from Messenger", ...(image ? { attachments: [{ type: "image", payload: { url: "https://cdn.example.test/photo.jpg?private=1" } }] } : {}) } }, signatureValid);
   assert.equal((await post("bad", "sender-1", false)).status, 401);
   assert.equal((await post("test-message", "sender-1")).status, 200);
   assert.equal((await post("test-message", "sender-1")).status, 200);
@@ -66,22 +74,71 @@ try {
   const firstThread = (await db.select().from(schema.messengerThreads).where(and(eq(schema.messengerThreads.connectionId, saved.id), eq(schema.messengerThreads.senderId, "sender-1"))).limit(1))[0]!;
   assert.equal((await db.select().from(schema.messages).where(and(eq(schema.messages.businessId, businessId), eq(schema.messages.conversationId, firstThread.conversationId)))).length, 1);
   assert.equal((await db.select().from(schema.conversations).where(eq(schema.conversations.id, firstThread.conversationId)).limit(1))[0]?.ownership, "PAUSED");
+  assert.equal((await postNotification({ sender: { id: pageId }, recipient: { id: "sender-1" }, timestamp: Date.now(), message: { mid: "page-echo", is_echo: true, text: "echo" } })).status, 200);
+  assert.equal((await postNotification({ sender: { id: "sender-1" }, recipient: { id: pageId }, timestamp: Date.now(), message: { mid: "reply-message", text: "A reply", reply_to: { mid: "test-message" } } })).status, 200);
+  assert.equal((await db.select().from(schema.messages).where(and(eq(schema.messages.businessId, businessId), eq(schema.messages.conversationId, firstThread.conversationId)))).length, 2);
+  assert.equal((await db.select({ externalParentId: schema.messages.externalParentId }).from(schema.messages).where(eq(schema.messages.externalMessageId, "reply-message")).limit(1))[0]?.externalParentId, "test-message");
   await service.controlledReply(agency, saved.id, "Connection confirmed");
   await service.activate(agency, saved.id);
   assert.equal((await db.select().from(schema.conversations).where(eq(schema.conversations.id, firstThread.conversationId)).limit(1))[0]?.ownership, "PAUSED");
   const registry = new InMemoryChannelRegistry(); registry.register(adapter); const presence = new RegistryPresenceController(registry); const realtime = new PostgresRealtimeBus(db);
+  const storage = new FileObjectStorage("/tmp/agentos-phase6-media", "https://agentos.example", "phase6-media-signing-key-32-characters-long");
+  const downloader = new MessengerMediaDownloader(vault, ["cdn.example.test"], { async send() { return { status: 200, body: new Uint8Array([255, 216, 255, 217]) }; } });
+  const media = new AttachmentService(storage, downloader, { async describe() { return { text: "A customer test image", version: "fixture", provider: "fake-vision" }; } }, null, null, realtime, undefined, new PostgresAttachmentRepository(db));
+  const attachment: NonNullable<Parameters<typeof startPhase5Worker>[0]["attachment"]> = async (event, signal) => { if (event.type !== "attachment.received") return; const context = createTrustedBusinessContext({ businessId: event.businessId, principal: { kind: "system", service: "media-test" }, source: "internal_system", conversationId: event.conversationId!, traceId: event.traceId, capabilityGrants: [] }, signal); await media.recover(context, event.payload.attachmentId); await media.process(context, event.payload.attachmentId); };
+  rateLimitNext = true;
   const runtime = new AgentRuntime({ versions: new AgentVersionService(new PostgresAgentVersionRepository(db)), contextEngine: new LayeredContextEngine(new PostgresRuntimeContextSource(db)), models: new FakeModelProvider([{ kind: "actions", actions: [{ id: ulid(), schemaVersion: "1.0", type: "SendMessage", idempotencyKey: `phase6:${ulid()}`, text: "Agent reply" }], usage: { inputTokens: 8, outputTokens: 6, totalTokens: 14 } }]), tools: new ToolRegistry(), actions: new DeferredChannelActionExecutor(new PostgresRuntimeActionRepository(db), new PostgresRuntimeDomainActions(db)), traces: new PostgresRuntimeTraceRepository(db), realtime, presence });
-  stop = await startPhase5Worker({ db, redisUrl, runtime, registry, presence, realtime, capabilities: async () => ["conversation.read", "handoff.request"] });
+  stop = await startPhase5Worker({ db, redisUrl, runtime, registry, presence, realtime, attachment, capabilities: async () => ["conversation.read", "handoff.request"] });
   assert.equal((await post("live-message", "sender-2")).status, 200);
   const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline && !bodies.some((body) => "message" in body && JSON.stringify(body).includes("Agent reply"))) await Bun.sleep(50);
+  while (Date.now() < deadline && bodies.filter((body) => "message" in body && JSON.stringify(body).includes("Agent reply")).length < 2) await Bun.sleep(50);
   assert.ok(bodies.some((body) => "message" in body && JSON.stringify(body).includes("Agent reply")), "durable Messenger response not sent");
+  assert.equal(bodies.filter((body) => "message" in body && JSON.stringify(body).includes("Agent reply")).length, 2, "rate-limited send was retried once");
   assert.ok(bodies.some((body) => body.sender_action === "mark_seen"));
   assert.ok(bodies.some((body) => body.sender_action === "typing_on"));
   assert.ok(bodies.some((body) => body.sender_action === "typing_off"));
+  const sentReply = (await db.select({ externalMessageId: schema.messages.externalMessageId }).from(schema.messages).where(and(eq(schema.messages.businessId, businessId), eq(schema.messages.conversationId, (await db.select({ conversationId: schema.messengerThreads.conversationId }).from(schema.messengerThreads).where(and(eq(schema.messengerThreads.connectionId, saved.id), eq(schema.messengerThreads.senderId, "sender-2"))).limit(1))[0]!.conversationId), eq(schema.messages.senderKind, "AGENT"))).limit(1))[0]!.externalMessageId!;
+  const sentAt = Date.now() + 1000;
+  assert.equal((await postNotification({ sender: { id: "sender-2" }, recipient: { id: pageId }, timestamp: sentAt, delivery: { mids: [sentReply], watermark: sentAt } })).status, 200);
+  assert.equal((await postNotification({ sender: { id: "sender-2" }, recipient: { id: pageId }, timestamp: sentAt, read: { watermark: sentAt } })).status, 200);
+  const receiptDeadline = Date.now() + 5000;
+  while (Date.now() < receiptDeadline) { const row = (await db.select({ lifecycle: schema.messages.lifecycle }).from(schema.messages).where(and(eq(schema.messages.businessId, businessId), eq(schema.messages.externalMessageId, sentReply))).limit(1))[0]; if (row?.lifecycle && "message.delivered" in row.lifecycle && "message.read" in row.lifecycle) break; await Bun.sleep(50); }
+  const receipt = (await db.select({ lifecycle: schema.messages.lifecycle }).from(schema.messages).where(and(eq(schema.messages.businessId, businessId), eq(schema.messages.externalMessageId, sentReply))).limit(1))[0]!.lifecycle;
+  assert.ok("message.delivered" in receipt && "message.read" in receipt);
+  assert.equal((await post("image-message", "sender-1", true, true)).status, 200);
+  let imageRow: typeof schema.attachments.$inferSelect | undefined;
+  const mediaDeadline = Date.now() + 10_000;
+  while (Date.now() < mediaDeadline) { imageRow = (await db.select().from(schema.attachments).where(and(eq(schema.attachments.businessId, businessId), eq(schema.attachments.conversationId, firstThread.conversationId))).limit(1))[0]; if (imageRow?.status === "READY") break; await Bun.sleep(50); }
+  assert.equal(imageRow?.status, "READY"); assert.equal(imageRow?.sizeBytes, 4);
+  assert.equal((await db.select().from(schema.attachmentArtifacts).where(eq(schema.attachmentArtifacts.attachmentId, imageRow!.id)).limit(1))[0]?.content, "A customer test image");
+  const signed = new URL(await storage.signedGet(imageRow!.objectKey!, 60));
+  assert.equal((await storage.readSigned(imageRow!.objectKey!, Number(signed.searchParams.get("expires")), signed.searchParams.get("signature")!)).length, 4);
+  const liveThread = (await db.select().from(schema.messengerThreads).where(and(eq(schema.messengerThreads.connectionId, saved.id), eq(schema.messengerThreads.senderId, "sender-2"))).limit(1))[0]!;
+  const inbound = (await db.select({ id: schema.messages.id }).from(schema.messages).where(and(eq(schema.messages.businessId, businessId), eq(schema.messages.conversationId, liveThread.conversationId), eq(schema.messages.senderKind, "CUSTOMER"))).limit(1))[0]!;
+  const orderContext = createTrustedBusinessContext({ businessId, principal: { kind: "system", service: "phase6-order-test" }, source: "internal_system", agentId, conversationId: liveThread.conversationId, customerId: liveThread.customerId, traceId: ulid(), capabilityGrants: ["commerce.write"] });
+  const now = new Date().toISOString(); const pendingId = ulid(); const reference = { productId: "shirt", variantId: "L", source: "CATALOG" as const, confirmed: true };
+  const pending = pendingOrderSchema.parse({ id: pendingId, businessId, conversationId: liveThread.conversationId, customerId: liveThread.customerId, channel: "facebook_messenger", agentId, agentVersionId: versionId, runId: null, items: [{ reference, quantity: 1 }], fields: { phone: "01234567890" }, missingFields: [], paymentMethod: "COD", deliveryMethod: "HOME", state: "CONFIRMED", confirmation: "GIVEN", sourceMessageIds: [inbound.id], expiresAt: new Date(Date.now() + 60_000).toISOString(), history: [{ state: "CONFIRMED", at: now, reason: "customer_confirmed" }], createdAt: now, updatedAt: now });
+  const orderRepository = new PostgresOrderRepository(db); await orderRepository.savePending(orderContext, pending);
+  const order = orderSchema.parse({ id: ulid(), number: `ORD-${ulid()}`, businessId, conversationId: liveThread.conversationId, customerId: liveThread.customerId, pendingOrderId: pendingId, sourceChannel: "facebook_messenger", sourceMessageIds: [inbound.id], agentId, agentVersionId: versionId, runId: null, origin: "AGENT", fields: pending.fields, paymentMethod: "COD", deliveryMethod: "HOME", confirmation: "GIVEN", status: "CONFIRMED", items: [{ id: ulid(), reference, productName: "Shirt", variantName: "Large", sku: null, quantity: 1, unitPriceMinor: 1500, discountMinor: 0, totalMinor: 1500, currency: "BDT" }], totalMinor: 1500, currency: "BDT", notificationState: "PENDING", notes: [], createdAt: now, updatedAt: now });
+  await orderRepository.commitOrder(orderContext, order, `order:${pendingId}`);
+  const recordedOrder = (await db.select({ sourceConnectionId: schema.orders.sourceConnectionId, sourcePageId: schema.orders.sourcePageId, sourceMessageIds: schema.orders.sourceMessageIds }).from(schema.orders).where(eq(schema.orders.id, order.id)).limit(1))[0]!;
+  assert.equal(recordedOrder.sourceConnectionId, saved.id); assert.equal(recordedOrder.sourcePageId, pageId); assert.deepEqual(recordedOrder.sourceMessageIds, [inbound.id]);
+  const uncertainAction = { id: ulid(), schemaVersion: "1.0" as const, type: "SendMessage" as const, idempotencyKey: `uncertain:${ulid()}`, text: "Ambiguous send" };
+  unknownNext = true;
+  await assert.rejects(adapter.execute(orderContext, uncertainAction), /EXTERNAL_OUTCOME_UNKNOWN/);
+  assert.equal((await adapter.reconcile(orderContext, uncertainAction)).status, "UNKNOWN");
+  assert.equal((await adapter.execute(orderContext, uncertainAction)).safeReason, "RECONCILIATION_REQUIRED");
+  assert.equal(bodies.filter((body) => "message" in body && JSON.stringify(body).includes("Ambiguous send")).length, 1);
+  const unsupported = { id: ulid(), schemaVersion: "1.0" as const, type: "ReplyToMessage" as const, idempotencyKey: `unsupported:${ulid()}`, externalMessageId: sentReply, text: "Reply" };
+  assert.equal((await adapter.execute(orderContext, unsupported)).safeReason, "CAPABILITY_UNAVAILABLE");
   const oauth = await service.beginOAuth(agency, agentId); const state = new URL(oauth.url).searchParams.get("state")!;
   const selection = await service.finishOAuth(agency, state, "fixture-code"); assert.equal(selection.pages.length, 1);
   assert.equal((await service.selectOAuthPage(agency, selection.stateId, selection.pages[0]!.id)).state, "DRAFT");
   await assert.rejects(service.selectOAuthPage(agency, selection.stateId, selection.pages[0]!.id), /OAUTH_STATE_INVALID/);
-  console.log("Phase 6 Messenger PostgreSQL/Redis path passed: manual and OAuth setup, encrypted credentials, verification gates, signed webhook, dedupe, paused test, durable worker, Meta send, presence, and tenant scope.");
+  authFailureNext = true;
+  const expiredAction = { id: ulid(), schemaVersion: "1.0" as const, type: "SendMessage" as const, idempotencyKey: `expired:${ulid()}`, text: "Expired token" };
+  assert.equal((await adapter.execute(orderContext, expiredAction)).safeReason, "META_AUTH");
+  assert.equal((await service.list(agency)).find((row) => row.id === saved.id)?.state, "NEEDS_REAUTHORIZATION");
+  assert.equal((await adapter.execute(orderContext, { ...expiredAction, id: ulid(), idempotencyKey: `blocked:${ulid()}` }).catch((error) => (error as Error).message)), "CHANNEL_DISCONNECTED");
+  console.log("Phase 6 Messenger PostgreSQL/Redis path passed: manual and OAuth setup, encrypted credentials, verification gates, signed webhook, dedupe, reply refs, receipts, echo filtering, async media, paused test, durable worker, rate-limit retry, unknown-send reconciliation, capability failure, reauthorization, presence, tenant scope, and order provenance.");
 } finally { await stop?.(); await pool.end(); }

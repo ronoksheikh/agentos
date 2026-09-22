@@ -93,7 +93,7 @@ export class Phase5Processor {
     if (work.kind === "EVENT") { const event = await store.getEvent(work.businessId, work.resourceId); await this.deps.router.process(event, signal); return; }
     if (work.kind === "BROWSER") { await this.deps.router.processBrowser(work.businessId, work.resourceId, signal); return; }
     if (work.kind === "ATTACHMENT") { const event = await store.getEvent(work.businessId, work.resourceId); await this.deps.router.process(event, signal); return; }
-    if (work.kind === "OUTBOUND") { await this.deliver(work.businessId, work.resourceId, work.traceId, signal, lease); return; }
+    if (work.kind === "OUTBOUND") { await this.deliver(work.businessId, work.resourceId, work.traceId, signal, lease, work.id, work.attempt, work.maxAttempts); return; }
     if (work.kind === "GOAL") { await this.runGoal(work.businessId, work.resourceId, work.traceId, signal, lease); return; }
     if (work.kind !== "CONVERSATION") throw new Error("WORK_KIND_INVALID");
     const requested = await store.getBatch(work.businessId, work.resourceId);
@@ -130,7 +130,7 @@ export class Phase5Processor {
     await store.completeBatch(work.businessId, batch.id, result.runId, count ? "COMPLETED" : "SUPPRESSED", count ? undefined : "NO_FRESH_DELIVERY");
     for (const eventId of batch.eventIds) await store.eventState(work.businessId, eventId, "PROCESSED");
   }
-  private async deliver(businessId: string, effectId: string, traceId: string, signal: AbortSignal, lease: RedisConversationLease | null) {
+  private async deliver(businessId: string, effectId: string, traceId: string, signal: AbortSignal, lease: RedisConversationLease | null, workId: string, attempt: number, maxAttempts: number) {
     const effect = await this.deps.store.getEffect(businessId, effectId);
     if (!effect.conversationId || ["COMPLETED", "CANCELLED", "FAILED", "UNKNOWN"].includes(effect.state)) return;
     const context = await this.context(businessId, effect.conversationId, traceId, signal);
@@ -153,7 +153,16 @@ export class Phase5Processor {
       const sent = await adapter.execute(context, effect.action);
       if (sent.status === "EXECUTED") { await this.deps.store.effectState(businessId, effectId, "COMPLETED", undefined, sent.externalId); if (effect.relatedOrderId) await this.deps.store.db.update(dbs.orders).set({ notificationState: "SENT" }).where(and(eq(dbs.orders.id, effect.relatedOrderId), eq(dbs.orders.businessId, businessId))); await this.deps.presence.transition(context, adapter.channel, "SENT"); await this.publish("delivery.sent", context, { status: "SENT" }); }
       else { await this.deps.store.effectState(businessId, effectId, "FAILED", sent.safeReason ?? "CHANNEL_SKIPPED"); if (effect.relatedOrderId) await this.deps.store.db.update(dbs.orders).set({ notificationState: "FAILED" }).where(and(eq(dbs.orders.id, effect.relatedOrderId), eq(dbs.orders.businessId, businessId))); await this.deps.presence.transition(context, adapter.channel, "FAILED"); await this.publish("delivery.failed", context, { status: "FAILED" }); }
-    } catch { await this.deps.store.effectState(businessId, effectId, "UNKNOWN", "EXTERNAL_OUTCOME_UNKNOWN"); await this.deps.presence.transition(context, adapter.channel, "FAILED"); await this.publish("delivery.failed", context, { status: "UNKNOWN" }); }
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "CHANNEL_RATE_LIMIT" && attempt < maxAttempts) {
+        await this.deps.store.db.update(dbs.effectIntents).set({ state: "RESERVED", safeCode: "CHANNEL_RATE_LIMIT", updatedAt: new Date() }).where(and(eq(dbs.effectIntents.id, effectId), eq(dbs.effectIntents.businessId, businessId)));
+        const retryAfterMs = "retryAfterMs" in error && typeof error.retryAfterMs === "number" ? error.retryAfterMs : 1000;
+        await this.deps.store.reschedule(businessId, workId, new Date(Date.now() + Math.min(120_000, Math.max(1000, retryAfterMs))), "CHANNEL_RATE_LIMIT");
+        await this.deps.presence.transition(context, adapter.channel, "FAILED");
+        return;
+      }
+      await this.deps.store.effectState(businessId, effectId, error instanceof Error && "code" in error && error.code === "CHANNEL_RATE_LIMIT" ? "FAILED" : "UNKNOWN", error instanceof Error && "code" in error && error.code === "CHANNEL_RATE_LIMIT" ? "CHANNEL_RATE_LIMIT" : "EXTERNAL_OUTCOME_UNKNOWN"); await this.deps.presence.transition(context, adapter.channel, "FAILED"); await this.publish("delivery.failed", context, { status: "UNKNOWN" });
+    }
   }
   async reconcileUnknownEffect(businessId: string, effectId: string) {
     const effect = await this.deps.store.getEffect(businessId, effectId);
