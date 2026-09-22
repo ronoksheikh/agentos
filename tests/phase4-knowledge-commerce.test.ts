@@ -45,5 +45,17 @@ describe("Phase 4 conversational orders", () => {
     expect(() => service.getOrder(trusted(ids.businessB), first.order.id)).toThrow("ORDER_NOT_FOUND");
   });
   test("expiry and human takeover close automated flow", async () => { const { service } = build(); const p = service.start(trusted(), { channel: "web_chat" }); service.takeOver(trusted(), p.id); await expect(service.addItem(trusted(), p.id, { reference: { productId: "shirt", variantId: "L", source: "CATALOG", confirmed: true }, quantity: 1 })).rejects.toThrow("PENDING_ORDER_CLOSED"); service.resume(trusted(), p.id); service.cancelPending(trusted(), p.id); expect(service.pending.get(p.id)?.state).toBe("CANCELLED"); });
+  test("rechecks stock and reconciles concurrent order intents for one pending order", async () => {
+    const { adapter, service } = build(); const context = trusted(); const pending = service.start(context, { channel: "web_chat" });
+    await service.addItem(context, pending.id, { reference: { productId: "shirt", variantId: "L", source: "CATALOG", confirmed: true }, quantity: 2 });
+    service.collect(context, pending.id, { fields: { phone: "01700000000" }, paymentMethod: "COD", deliveryMethod: "HOME" });
+    adapter.products.get("shirt")!.variants[0]!.stock = 1;
+    await expect(service.confirm(context, pending.id)).rejects.toThrow("INSUFFICIENT_STOCK");
+    adapter.products.get("shirt")!.variants[0]!.stock = 3;
+    await service.confirm(context, pending.id);
+    const [first, second] = await Promise.all([service.createOrder(context, pending.id, "first"), service.createOrder(context, pending.id, "second")]);
+    expect(first.order.id).toBe(second.order.id); expect(service.orders.size).toBe(1); expect([first.duplicate, second.duplicate]).toEqual([false, true]);
+    expect(() => service.removeItem(context, pending.id, { productId: "shirt", variantId: "L", source: "CATALOG", confirmed: true })).toThrow("PENDING_ORDER_CLOSED");
+  });
   test("commerce tools obey safety and grants", async () => { const { service } = build(); const registry = new ToolRegistry(); createCommerceTools(service).forEach((tool) => registry.register(tool)); const context = { ...trusted(), runId: ulid(), capabilityGrants: ["commerce.read", "commerce.manage"] }; expect((await registry.execute({ id: ulid(), name: "search_products", arguments: { query: "shirt" } }, context, {}, new DefaultToolPolicyEvaluator())).status).toBe("COMPLETED"); expect((await registry.execute({ id: ulid(), name: "cancel_order", arguments: { orderId: ulid() } }, context, {}, new DefaultToolPolicyEvaluator())).status).toBe("REQUIRES_APPROVAL"); });
 });

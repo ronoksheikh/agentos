@@ -20,13 +20,15 @@ export class DefaultKnowledgeParser implements KnowledgeParser {
     if (bytes.byteLength > 10_000_000) throw new Error("SOURCE_TOO_LARGE");
     if (type === "PDF") { const parser = new PDFParse({ data: bytes }); try { return (await parser.getText()).text; } finally { await parser.destroy(); } }
     if (type === "DOCX") return (await mammoth.extractRawText({ buffer: Buffer.from(bytes) })).value;
-    const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    let content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (type === "URL_SNAPSHOT") content = content.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ");
     if (type === "CSV") return content.split(/\r?\n/).map((row) => row.split(",").map((cell) => cell.trim()).join(" | ")).join("\n");
     return content;
   }
 }
 const terms = (value: string) => [...new Set(value.toLocaleLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? [])];
-function chunksOf(content: string) { const words = content.replace(/\s+/g, " ").trim().split(" ").filter(Boolean); const chunks: string[] = []; for (let i = 0; i < words.length; i += 150) chunks.push(words.slice(i, i + 180).join(" ")); return chunks.slice(0, 500); }
+export function chunkKnowledgeText(content: string) { const words = content.replace(/\s+/g, " ").trim().split(" ").filter(Boolean); const chunks: string[] = []; for (let i = 0; i < words.length; i += 150) chunks.push(words.slice(i, i + 180).join(" ")); return chunks.slice(0, 500); }
+export function sanitizeKnowledgeText(content: string) { return content.replace(/\b(ignore (all |any )?(previous|prior) instructions|system prompt|developer message|tool policy)\b/gi, "[untrusted instruction removed]"); }
 
 /** Deterministic tenant-scoped adapter. PostgreSQL can replace the retriever without changing tool contracts. */
 export class KnowledgeService implements KnowledgeRetriever {
@@ -43,7 +45,7 @@ export class KnowledgeService implements KnowledgeRetriever {
   }
   async replace(context: TrustedBusinessContext, id: string, bytes?: Uint8Array) { const source = this.require(context, id); this.snapshot(source); source.version++; source.status = "OUTDATED"; source.updatedAt = this.clock().toISOString(); await this.process(context, id, bytes); return this.get(context, id)!; }
   async reprocess(context: TrustedBusinessContext, id: string, bytes?: Uint8Array) { return this.replace(context, id, bytes); }
-  setEnabled(context: TrustedBusinessContext, id: string, enabled: boolean) { const source = this.require(context, id); source.enabled = enabled; source.status = enabled ? (source.chunkCount ? "READY" : "OUTDATED") : "DISABLED"; source.updatedAt = this.clock().toISOString(); return structuredClone(source); }
+  setEnabled(context: TrustedBusinessContext, id: string, enabled: boolean) { const source = this.require(context, id); if (enabled && !["READY", "DISABLED"].includes(source.status)) throw new Error("KNOWLEDGE_NOT_READY"); source.enabled = enabled; source.status = enabled ? "READY" : source.status === "READY" ? "DISABLED" : source.status; source.updatedAt = this.clock().toISOString(); return structuredClone(source); }
   delete(context: TrustedBusinessContext, id: string) { const source = this.require(context, id); this.snapshot(source); source.status = "DELETED"; source.enabled = false; source.updatedAt = this.clock().toISOString(); this.chunks.delete(id); }
   inspect(context: TrustedBusinessContext, id: string) { const source = this.require(context, id); return { source: structuredClone(source), chunks: structuredClone(this.chunks.get(id) ?? []) }; }
   private require(context: TrustedBusinessContext, id: string) { const source = this.sources.get(id); if (!source || source.businessId !== context.businessId || source.status === "DELETED") throw new Error("KNOWLEDGE_NOT_FOUND"); return source; }
@@ -53,8 +55,8 @@ export class KnowledgeService implements KnowledgeRetriever {
     try {
       if (source.type === "LIVE_DESCRIPTOR") { source.status = "READY"; return; }
       if (!bytes?.byteLength) throw new Error("EMPTY_SOURCE");
-      const content = await this.parser.parse(source.type, bytes); if (!content.trim()) throw new Error("EMPTY_SOURCE");
-      const pieces = chunksOf(content); source.checksum = createHash("sha256").update(bytes).digest("hex"); source.sizeBytes = bytes.byteLength; source.chunkCount = pieces.length;
+      const content = sanitizeKnowledgeText(await this.parser.parse(source.type, bytes)); if (!content.trim()) throw new Error("EMPTY_SOURCE");
+      const pieces = chunkKnowledgeText(content); source.checksum = createHash("sha256").update(bytes).digest("hex"); source.sizeBytes = bytes.byteLength; source.chunkCount = pieces.length;
       this.chunks.set(id, pieces.map((piece, ordinal) => ({ id: ulid(), businessId: context.businessId, sourceId: id, sourceVersion: source.version, ordinal, content: piece, terms: terms(piece) })));
       source.status = "READY";
     } catch (error) { source.status = "FAILED"; source.errorCode = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : "PARSE_FAILED"; }
