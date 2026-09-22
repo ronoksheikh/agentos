@@ -12,16 +12,16 @@ export const businessRoleSchema = z.enum(["OWNER", "ADMIN", "STAFF", "VIEWER"]);
 
 export const roleCapabilities = {
   agency: {
-    SUPER_ADMIN: ["agency.manage", "session.manage", "business.read", "business.manage", "member.manage", "agent.manage", "run.read", "run.execute", "conversation.read", "memory.manage", "audit.read", "feature_flag.manage", "tool_policy.manage"],
-    ADMIN: ["business.read", "business.manage", "member.manage", "agent.manage", "run.read", "run.execute", "conversation.read", "memory.manage", "audit.read", "feature_flag.manage", "tool_policy.manage"],
-    SUPPORT: ["business.read", "run.read", "conversation.read", "audit.read"],
-    DEVELOPER: ["business.read", "agent.manage", "run.read", "run.execute", "conversation.read", "audit.read", "tool_policy.manage"],
+    SUPER_ADMIN: ["agency.manage", "session.manage", "business.read", "business.manage", "member.manage", "agent.manage", "run.read", "run.execute", "conversation.read", "memory.manage", "audit.read", "feature_flag.manage", "tool_policy.manage", "knowledge.read", "knowledge.manage", "commerce.read", "commerce.write", "commerce.manage", "customer.read", "customer.manage", "attachment.read", "attachment.manage", "browser.use", "web.read", "custom_tool.manage", "custom_tool.execute", "order_policy.manage", "pending_goal.manage"],
+    ADMIN: ["business.read", "business.manage", "member.manage", "agent.manage", "run.read", "run.execute", "conversation.read", "memory.manage", "audit.read", "feature_flag.manage", "tool_policy.manage", "knowledge.read", "knowledge.manage", "commerce.read", "commerce.write", "commerce.manage", "customer.read", "customer.manage", "attachment.read", "attachment.manage", "browser.use", "web.read", "custom_tool.manage", "custom_tool.execute", "order_policy.manage", "pending_goal.manage"],
+    SUPPORT: ["business.read", "run.read", "conversation.read", "audit.read", "knowledge.read", "commerce.read", "customer.read", "attachment.read"],
+    DEVELOPER: ["business.read", "agent.manage", "run.read", "run.execute", "conversation.read", "audit.read", "tool_policy.manage", "knowledge.read", "knowledge.manage", "commerce.read", "attachment.read", "browser.use", "web.read", "custom_tool.manage", "custom_tool.execute"],
   },
   business: {
-    OWNER: ["business.read", "business.manage", "member.manage", "agent.manage", "conversation.read", "conversation.manage", "handoff.manage", "notification.manage", "run.read", "run.execute"],
-    ADMIN: ["business.read", "member.manage", "agent.manage", "conversation.read", "conversation.manage", "handoff.manage", "notification.manage", "run.read", "run.execute"],
-    STAFF: ["business.read", "conversation.read", "conversation.manage", "handoff.manage", "notification.manage", "memory.manage", "run.read", "run.execute"],
-    VIEWER: ["business.read", "conversation.read", "run.read"],
+    OWNER: ["business.read", "business.manage", "member.manage", "agent.manage", "conversation.read", "conversation.manage", "handoff.manage", "notification.manage", "run.read", "run.execute", "knowledge.read", "knowledge.manage", "commerce.read", "commerce.write", "commerce.manage", "customer.read", "customer.manage", "attachment.read", "attachment.manage", "order_policy.manage", "pending_goal.manage"],
+    ADMIN: ["business.read", "member.manage", "agent.manage", "conversation.read", "conversation.manage", "handoff.manage", "notification.manage", "run.read", "run.execute", "knowledge.read", "knowledge.manage", "commerce.read", "commerce.write", "commerce.manage", "customer.read", "customer.manage", "attachment.read", "attachment.manage", "order_policy.manage", "pending_goal.manage"],
+    STAFF: ["business.read", "conversation.read", "conversation.manage", "handoff.manage", "notification.manage", "memory.manage", "run.read", "run.execute", "knowledge.read", "commerce.read", "commerce.write", "commerce.manage", "customer.read", "customer.manage", "attachment.read", "pending_goal.manage"],
+    VIEWER: ["business.read", "conversation.read", "run.read", "knowledge.read", "commerce.read", "customer.read", "attachment.read"],
   },
 } as const;
 

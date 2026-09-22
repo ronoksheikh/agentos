@@ -36,8 +36,8 @@ export const agentVersionConfigSchema = z.object({
   disclosurePolicy: z.object({ discloseWhenAsked: z.boolean().default(true), statement: z.string().max(1_000).default("I am an automated assistant.") }).default({ discloseWhenAsked: true, statement: "I am an automated assistant." }),
   channelBehavior: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
   featureFlags: z.record(z.string(), z.boolean()).default({}),
-  browserPolicy: z.object({ enabled: z.literal(false).default(false), allowedDomains: z.array(z.string()).default([]) }).default({ enabled: false, allowedDomains: [] }),
-  knowledgePolicy: z.object({ enabled: z.literal(false).default(false), sourceIds: z.array(ulidSchema).default([]) }).default({ enabled: false, sourceIds: [] }),
+  browserPolicy: z.object({ enabled: z.boolean().default(false), allowedDomains: z.array(z.string()).default([]), deniedDomains: z.array(z.string()).default([]), maxActions: z.number().int().min(1).max(100).default(20), maxEgress: z.number().int().min(1).max(30).default(10) }).default({ enabled: false, allowedDomains: [], deniedDomains: [], maxActions: 20, maxEgress: 10 }),
+  knowledgePolicy: z.object({ enabled: z.boolean().default(false), sourceIds: z.array(ulidSchema).default([]) }).default({ enabled: false, sourceIds: [] }),
 });
 
 export const agentSchema = z.object({ id: ulidSchema, businessId: ulidSchema, name: z.string().min(1), activeVersionId: ulidSchema.nullable(), createdAt: isoDateTimeSchema, updatedAt: isoDateTimeSchema });

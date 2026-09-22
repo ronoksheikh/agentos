@@ -1,10 +1,15 @@
 import { Alert, Badge, Button, Card, Grid, Group, Progress, SimpleGrid, Stack, Table, Text, Title } from "@mantine/core";
+import Link from "next/link";
 
 const pageCopy: Record<string, { title: string; description: string }> = {
   businesses: { title: "Businesses", description: "Onboarding, structured profiles, assignments, and operational announcements." },
   agents: { title: "Agents & versions", description: "Draft safely, test explicit snapshots, publish atomically, and roll back." },
   "agent-playground": { title: "Agent Playground", description: "Disposable simulations through the canonical runtime. External effects stay blocked." },
   tools: { title: "Tools", description: "Review tool safety classes, grants, and business policy outcomes." },
+  knowledge: { title: "Knowledge", description: "Inspect source lifecycle, attribution, errors, and versions within a business workspace." },
+  orders: { title: "Orders", description: "Inspect confirmed conversational orders, immutable snapshots, and source provenance." },
+  attachments: { title: "Attachments", description: "Inspect media processing status and safe derived metadata." },
+  "browser-runs": { title: "Browser runs", description: "Inspect isolated browser activity without page secrets or screenshots." },
   customers: { title: "Customers", description: "Business-scoped identities and auditable match decisions." },
   conversations: { title: "Conversations", description: "Authorized search by customer, phone, order, message, tag, state, channel, date, unread, and agent." },
   memories: { title: "Memories & context", description: "Inspect memories, pins, summaries, pending goals, provenance, expiry, and outdated state." },
@@ -20,6 +25,7 @@ const pageCopy: Record<string, { title: string; description: string }> = {
 
 export function OperationalPage({ section }: { section: string }) {
   const copy = pageCopy[section] ?? { title: section, description: "Authorized operational workspace." }; const deferred = ["integrations", "failures-queues", "handoffs"].includes(section);
+  if (["knowledge", "orders", "attachments", "browser-runs"].includes(section)) return <Stack gap="lg"><Title order={1}>{copy.title}</Title><Text c="dimmed">{copy.description}</Text><Alert title="Choose a business" color="gray">Phase 4 records are scoped to one business. Open its workspace to inspect the live table.</Alert><Button component={Link} href="/businesses" variant="default" w="fit-content">Open businesses</Button></Stack>;
   return <Stack gap="lg"><Group justify="space-between" align="start"><div><Title order={1}>{copy.title}</Title><Text c="dimmed" maw={720}>{copy.description}</Text></div><Button>{section === "businesses" ? "Onboard business" : "Create"}</Button></Group>
     {deferred && <Alert title="Planned foundation" color="gray">The data contract is visible, but execution is deferred by the Phase 2 boundary.</Alert>}
     <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }}>{["Unread conversations", "Unresolved handoffs", "Failed runs", "Urgent issues"].map((label, i) => <Card withBorder key={label}><Text size="xs" c="dimmed">{label}</Text><Text className="metric" fw={700} fz={30}>{[12, 3, 1, 2][i]}</Text></Card>)}</SimpleGrid>

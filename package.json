@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun test",
     "db:generate": "drizzle-kit generate",
+    "db:phase4-smoke": "bun scripts/phase4-db-smoke.ts",
     "db:migrate": "drizzle-kit migrate",
     "admin:dev": "next dev apps/admin",
     "admin:build": "next build apps/admin",
