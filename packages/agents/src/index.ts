@@ -12,9 +12,12 @@ export const runtimeLimitsSchema = z.object({
 
 export const responseTimingPolicySchema = z.object({
   debounceMs: z.number().int().min(0).max(60_000).default(0),
+  maxBatchWaitMs: z.number().int().min(0).max(120_000).default(10_000),
+  attachmentWaitMs: z.number().int().min(0).max(30_000).default(5_000),
   minPreSendDelayMs: z.number().int().min(0).max(60_000).default(0),
   maxPreSendDelayMs: z.number().int().min(0).max(120_000).default(5_000),
   maxCustomerWaitMs: z.number().int().min(100).max(300_000).default(60_000),
+  variabilityMs: z.number().int().min(0).max(2_000).default(250),
   urgencyBypass: z.boolean().default(true),
   typing: z.object({ enabled: z.boolean().default(true), refreshMs: z.number().int().min(1_000).max(30_000).default(8_000) }),
 });
@@ -32,7 +35,7 @@ export const agentVersionConfigSchema = z.object({
   memoryPolicy: z.object({ enabled: z.boolean().default(true), defaultExpiryDays: z.number().int().positive().optional() }).default({ enabled: true }),
   runtimeLimits: runtimeLimitsSchema,
   handoffPolicy: z.object({ enabled: z.boolean().default(true), allowReasons: z.array(z.string()).default([]) }).default({ enabled: true, allowReasons: [] }),
-  responseTimingPolicy: responseTimingPolicySchema.default({ debounceMs: 0, minPreSendDelayMs: 0, maxPreSendDelayMs: 5_000, maxCustomerWaitMs: 60_000, urgencyBypass: true, typing: { enabled: true, refreshMs: 8_000 } }),
+  responseTimingPolicy: responseTimingPolicySchema.default({ debounceMs: 0, maxBatchWaitMs: 10_000, attachmentWaitMs: 5_000, minPreSendDelayMs: 0, maxPreSendDelayMs: 5_000, maxCustomerWaitMs: 60_000, variabilityMs: 250, urgencyBypass: true, typing: { enabled: true, refreshMs: 8_000 } }),
   disclosurePolicy: z.object({ discloseWhenAsked: z.boolean().default(true), statement: z.string().max(1_000).default("I am an automated assistant.") }).default({ discloseWhenAsked: true, statement: "I am an automated assistant." }),
   channelBehavior: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
   featureFlags: z.record(z.string(), z.boolean()).default({}),

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { isoDateTimeSchema, jsonValueSchema, nowIso, redactSafe, ulidSchema, type JsonValue } from "@agentos/shared";
 import type { AuthenticatedPrincipal, RealtimeScopeAuthorizer } from "@agentos/auth";
 
-export const realtimeTypeSchema = z.enum(["run.started", "context.built", "model.requested", "model.completed", "tool.requested", "tool.completed", "action.validated", "action.applied", "memory.updated", "run.completed", "run.failed", "run.cancelled", "conversation.updated", "batch.formed", "handoff.requested", "handoff.updated", "notification.updated", "counter.updated", "knowledge.processing", "knowledge.ready", "knowledge.failed", "browser.started", "browser.activity", "browser.closed", "attachment.processing", "attachment.ready", "attachment.failed", "order.updated", "goal.updated"]);
+export const realtimeTypeSchema = z.enum(["run.started", "context.built", "model.requested", "model.completed", "tool.requested", "tool.completed", "action.validated", "action.applied", "memory.updated", "run.completed", "run.failed", "run.cancelled", "conversation.updated", "batch.formed", "batch.suppressed", "work.queued", "work.retry", "work.dead", "delivery.sent", "delivery.failed", "handoff.requested", "handoff.updated", "notification.updated", "counter.updated", "knowledge.processing", "knowledge.ready", "knowledge.failed", "browser.started", "browser.activity", "browser.closed", "attachment.processing", "attachment.ready", "attachment.failed", "order.updated", "goal.updated"]);
 export const realtimeEnvelopeSchema = z.object({ id: ulidSchema, schemaVersion: z.literal("1.0"), type: realtimeTypeSchema, occurredAt: isoDateTimeSchema, sequence: z.number().int().positive().optional(), businessId: ulidSchema, conversationId: ulidSchema.optional(), runId: ulidSchema.optional(), traceId: ulidSchema, payload: jsonValueSchema });
 export type RealtimeEnvelope = z.infer<typeof realtimeEnvelopeSchema>;
 export interface RealtimeBus { publish(event: Omit<RealtimeEnvelope, "id" | "schemaVersion" | "occurredAt" | "sequence">): Promise<RealtimeEnvelope>; replay(businessId: string, afterSequence?: number): Promise<RealtimeEnvelope[]>; }
@@ -84,6 +84,7 @@ export class ClientRealtimeProjector {
     "memory.updated": { label: "Customer context loaded", status: "COMPLETED" }, "run.completed": { label: "Reply sent", status: "COMPLETED" },
     "run.failed": { label: "Agent run failed", status: "FAILED" }, "run.cancelled": { label: "Agent run failed", status: "FAILED" },
     "conversation.updated": { label: "Conversation updated", status: "COMPLETED" }, "batch.formed": { label: "Combined message batch", status: "COMPLETED" },
+    "batch.suppressed": { label: "Conversation updated", status: "COMPLETED" }, "work.queued": { label: "Conversation updated", status: "ACTIVE" }, "work.retry": { label: "Conversation updated", status: "ACTIVE" }, "work.dead": { label: "Agent run failed", status: "FAILED" }, "delivery.sent": { label: "Reply sent", status: "COMPLETED" }, "delivery.failed": { label: "Agent run failed", status: "FAILED" },
     "handoff.requested": { label: "Handoff requested", status: "ATTENTION" }, "handoff.updated": { label: "Handoff updated", status: "COMPLETED" },
     "notification.updated": { label: "Handoff updated", status: "ATTENTION" }, "counter.updated": { label: "Conversation updated", status: "COMPLETED" },
     "knowledge.processing": { label: "Checking knowledge", status: "ACTIVE" }, "knowledge.ready": { label: "Checking knowledge", status: "COMPLETED" }, "knowledge.failed": { label: "Checking knowledge", status: "FAILED" },
@@ -92,7 +93,7 @@ export class ClientRealtimeProjector {
     "order.updated": { label: "Order updated", status: "COMPLETED" }, "goal.updated": { label: "Pending goal updated", status: "COMPLETED" },
   };
   project(event: RealtimeEnvelope): RealtimeEnvelope {
-    const base = this.labels[event.type]; const payload = typeof event.payload === "object" && event.payload && !Array.isArray(event.payload) && typeof event.payload.count === "number" ? { ...base, count: Math.max(0, Math.trunc(event.payload.count)) } : base;
+    const base = event.type === "run.completed" && typeof event.payload === "object" && event.payload && !Array.isArray(event.payload) && event.payload.deliveryManaged === true ? { label: "Preparing reply" as const, status: "COMPLETED" as const } : this.labels[event.type]; const payload = typeof event.payload === "object" && event.payload && !Array.isArray(event.payload) && typeof event.payload.count === "number" ? { ...base, count: Math.max(0, Math.trunc(event.payload.count)) } : base;
     return realtimeEnvelopeSchema.parse({ ...event, payload: clientActivitySchema.parse(payload) });
   }
   projectMany(events: RealtimeEnvelope[]) { return events.map((event) => this.project(event)); }

@@ -28,3 +28,7 @@ export const agentEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export type AgentEvent = z.infer<typeof agentEventSchema>;
+
+// The runtime's AgentEvent remains the small, compatible input to AgentRuntime.
+// Durable adapters and processors use the richer public envelope below.
+export * from "./universal";
