@@ -22,6 +22,13 @@
       "when": 1790098785973,
       "tag": "0002_dark_tomorrow_man",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790106609712,
+      "tag": "0003_round_korath",
+      "breakpoints": true
     }
   ]
 }
