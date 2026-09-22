@@ -54,15 +54,16 @@ export interface RealtimeScopeAuthorizer {
   canSubscribe(principal: AuthenticatedPrincipal, scope: { businessId: string; conversationId?: string; runId?: string }): Promise<boolean>;
 }
 
-export function createBetterAuth(db: Parameters<typeof drizzleAdapter>[0], secret: string, baseURL: string) {
+export function createBetterAuth(db: Parameters<typeof drizzleAdapter>[0], secret: string, baseURL: string, options: { sendResetPassword?: (data: { user: { id: string; email: string; name: string }; url: string; token: string }, request?: Request) => Promise<void>; isUserActive?: (userId: string) => Promise<boolean> } = {}) {
   if (secret.length < 32) throw new Error("BETTER_AUTH_SECRET must contain at least 32 characters");
   return betterAuth({
     database: drizzleAdapter(db, { provider: "pg", schema: { user: users, session: sessions, account: accounts, verification: verifications } }),
     secret,
     baseURL,
-    emailAndPassword: { enabled: true, requireEmailVerification: false },
+    emailAndPassword: { enabled: true, requireEmailVerification: false, minPasswordLength: 12, resetPasswordTokenExpiresIn: 3_600, revokeSessionsOnPasswordReset: true, ...(options.sendResetPassword ? { sendResetPassword: options.sendResetPassword } : {}) },
     session: { expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24, cookieCache: { enabled: false } },
     advanced: { useSecureCookies: baseURL.startsWith("https://") },
+    ...(options.isUserActive ? { databaseHooks: { session: { create: { before: async (session: { userId: string }) => options.isUserActive!(session.userId) } } } } : {}),
   });
 }
 
