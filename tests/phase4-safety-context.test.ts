@@ -50,6 +50,14 @@ describe("Phase 4 custom HTTP and browser safety", () => {
     await expect(browser.open({ ...context, cancellationSignal: controller.signal }, "https://shop.example.com")).rejects.toThrow("CANCELLED");
     expect(JSON.stringify(await bus.replay(ids.businessA))).not.toContain("evil.example.com");
   });
+  test("persists only scoped browser session and activity facts", async () => {
+    const sessions: string[] = [], actions: string[] = [];
+    const browser = new BrowserCoordinator(new FakeBrowserAdapter(), () => ({ allowedDomains: ["shop.example.com"], deniedDomains: [], timeoutMs: 10000, maxActions: 3, maxEgress: 3, allowDownloads: false, allowUploads: false }), () => new Date("2026-01-01T00:00:00Z"), undefined, { async saveSession(context, session) { expect(session.businessId).toBe(context.businessId); sessions.push(session.status); }, async recordActivity(context, activity) { expect(activity.runId).toBe(context.runId); actions.push(activity.action); } });
+    const context = { ...trusted(), runId: ulid() }; const session = await browser.open(context, "https://shop.example.com/product?private=one");
+    await browser.act(context, session.id, "close");
+    expect(sessions).toEqual(["OPEN", "CLOSED"]); expect(actions).toEqual(["open", "close"]);
+    expect(JSON.stringify(browser.activities)).not.toContain("private=one");
+  });
 });
 
 describe("Phase 4 attachment, goals, and bounded context", () => {

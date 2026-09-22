@@ -10,6 +10,8 @@ import { orderPolicySchema, orderStatusSchema, type OrderPolicy } from "@agentos
 import { goalSchema, type PendingGoal } from "@agentos/goals";
 import type { TrustedBusinessContext } from "@agentos/shared";
 export { PostgresOrderRepository } from "./orders";
+export { PostgresAttachmentRepository } from "./attachments";
+export { PostgresBrowserRepository } from "./browser";
 
 type Db = NodePgDatabase;
 const sourceInputSchema = z.object({ type: z.enum(["PDF", "DOCX", "TEXT", "FAQ", "URL_SNAPSHOT", "CSV", "PRODUCT_CATALOG", "MANUAL_NOTE", "POLICY", "LIVE_DESCRIPTOR"]), label: z.string().min(1).max(200), url: z.url().optional(), retentionUntil: z.iso.datetime({ offset: true }).optional() });

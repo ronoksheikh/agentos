@@ -4,9 +4,10 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import { ulid } from "ulid";
 import { businesses, conversations, customTools, knowledgeChunks, knowledgeSources, orderNotes, orders, pendingOrders, users } from "@agentos/database";
-import { PostgresKnowledgeRetriever, PostgresPhase4Operations } from "@agentos/phase4-operations";
+import { PostgresAttachmentRepository, PostgresKnowledgeRetriever, PostgresPhase4Operations } from "@agentos/phase4-operations";
 import { PostgresOrderRepository } from "@agentos/phase4-operations";
 import { FakeCommerceAdapter, OrderService } from "@agentos/commerce";
+import { AttachmentService, InMemoryObjectStorage } from "@agentos/attachments";
 import { createTrustedBusinessContext } from "@agentos/shared";
 
 if (process.env.AGENTOS_PHASE4_SMOKE_DB !== "1" || !process.env.DATABASE_URL?.includes("agentos_phase4")) throw new Error("Run only against an isolated agentos_phase4 database");
@@ -53,6 +54,13 @@ try {
   assert.equal((await db.select().from(customTools).where(eq(customTools.id, toolId)))[0]?.businessId, businessId);
   const goal = await service.markGoal(context, { type: "follow_up", description: "Ask tomorrow", triggerType: "TIME", trigger: { at: "tomorrow" }, idempotencyKey: `goal-${ulid()}` });
   assert.equal((await service.listGoals(context))[0]?.id, goal.id); assert.equal((await service.resolveGoal(context, goal.id)).state, "RESOLVED");
+  const attachmentRepository = new PostgresAttachmentRepository(db); const attachmentBytes = Uint8Array.from([137, 80, 78, 71, 1]); const storage = new InMemoryObjectStorage();
+  const attachmentService = new AttachmentService(storage, { async download() { return attachmentBytes; } }, { async describe() { return { text: "Blue item", confidence: 0.8, provider: "fake", version: "1" }; } }, null, null, undefined, () => new Date(), attachmentRepository);
+  const received = await attachmentService.receive(context, { source: "AUTHENTICATED_UPLOAD", sourceRef: "smoke", kind: "IMAGE", mimeType: "image/png", sizeBytes: attachmentBytes.length });
+  assert.equal((await attachmentService.process(context, received.id)).attachment.status, "READY");
+  const recovered = await new AttachmentService(storage, { async download() { return attachmentBytes; } }, null, null, null, undefined, () => new Date(), attachmentRepository).recover(context, received.id);
+  assert.equal(recovered.artifacts[0]?.content, "Blue item"); assert.equal(await attachmentRepository.load(other, received.id), null);
+  await attachmentService.delete(context, received.id); assert.equal(await attachmentRepository.load(context, received.id), null);
   await assert.rejects(service.saveCustomTool(context, { name: "unsafe", description: "unsafe", type: "HTTP_API", method: "GET", baseUrl: "http://127.0.0.1", pathTemplate: "/", inputSchema: {}, outputSchema: {}, outputMapping: {}, timeoutMs: 1000, allowedHosts: ["127.0.0.1"], safeHeaders: {}, credentialRef: null, requiredCapabilities: ["custom_tool.execute"], allowedAgentIds: [], safetyClass: "READ", enabled: false, maxRequestBytes: 1000, maxResponseBytes: 1000 }), /URL_POLICY_DENIED/);
   await service.deleteKnowledge(context, sourceId); assert.equal((await db.select().from(knowledgeSources).where(eq(knowledgeSources.id, sourceId)))[0]?.status, "DELETED"); assert.equal((await db.select().from(knowledgeChunks).where(eq(knowledgeChunks.sourceId, sourceId))).length, 0);
   process.stdout.write("Phase 4 PostgreSQL smoke passed\n");
