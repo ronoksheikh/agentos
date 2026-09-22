@@ -1,0 +1,12 @@
+import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { and, eq } from "drizzle-orm";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { createBetterAuth, businessRoleSchema, requireBusinessCapability } from "@agentos/auth";
+import { businessMemberships, businesses, users } from "@agentos/database";
+const databaseUrl = process.env.DATABASE_URL ?? "postgresql://agentos:agentos@localhost:5432/agentos";
+const authSecret = process.env.BETTER_AUTH_SECRET ?? "development-only-secret-change-me-now";
+export const database = drizzle(new Pool({ connectionString: databaseUrl }));
+export const auth = createBetterAuth(database, authSecret, process.env.CLIENT_BETTER_AUTH_URL ?? "http://localhost:3001", { isUserActive: async (userId) => Boolean((await database.select({ id: users.id }).from(users).where(and(eq(users.id, userId), eq(users.state, "ACTIVE"))).limit(1))[0]), sendResetPassword: async ({ user, url }) => { if (!process.env.AUTH_EMAIL_WEBHOOK_URL) throw new Error(`Password reset delivery is not configured for ${user.id}`); const response = await fetch(process.env.AUTH_EMAIL_WEBHOOK_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ template: "password-reset", recipient: user.email, url }) }); if (!response.ok) throw new Error("Password reset delivery failed"); } });
+export async function requireClientPage(capability = "business.read", candidateBusinessId?: string) { const session = await auth.api.getSession({ headers: await headers() }); if (!session) redirect("/sign-in"); const rows = await database.select({ businessId: businessMemberships.businessId, role: businessMemberships.role, capabilities: businessMemberships.capabilities, businessName: businesses.name }).from(users).innerJoin(businessMemberships, eq(businessMemberships.userId, users.id)).innerJoin(businesses, eq(businesses.id, businessMemberships.businessId)).where(and(eq(users.id, session.user.id), eq(users.state, "ACTIVE"), eq(businesses.disabled, false))); const selected = candidateBusinessId ? rows.find((row) => row.businessId === candidateBusinessId) : rows[0]; if (!selected) redirect("/sign-in?reason=no-membership"); requireBusinessCapability({ role: businessRoleSchema.parse(selected.role), capabilities: selected.capabilities }, capability); return { session, membership: selected, businesses: rows }; }

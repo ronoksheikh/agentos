@@ -11,7 +11,9 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "admin:dev": "next dev apps/admin",
-    "admin:build": "next build apps/admin"
+    "admin:build": "next build apps/admin",
+    "client:dev": "next dev apps/client -p 3001",
+    "client:build": "next build apps/client"
   },
   "dependencies": {
     "@mantine/core": "^8",

@@ -1,0 +1,3 @@
+import { ClientPage } from "../components/ClientPage"; import { ClientShell } from "../components/Shell"; import { requireClientPage } from "../lib/server";
+export const dynamic = "force-dynamic";
+export default async function Page({ searchParams }: { searchParams: Promise<{ business?: string }> }) { const query = await searchParams; const access = await requireClientPage("business.read", query.business); return <ClientShell businessId={access.membership.businessId} businessName={access.membership.businessName} role={access.membership.role} businesses={access.businesses}><ClientPage section="overview" businessId={access.membership.businessId} role={access.membership.role} /></ClientShell>; }
