@@ -30,6 +30,6 @@ export function evaluateResponseTiming(unsafe: TimingInput) {
 
 export function classifyFailure(code: string) {
   if (["VALIDATION_ERROR", "PERMISSION_ERROR", "FORBIDDEN", "TRUSTED_SCOPE_MISMATCH", "CANCELLED"].includes(code)) return { retryable: false, category: code };
-  if (["MODEL_ERROR", "TOOL_ERROR", "CHANNEL_ERROR", "AUTH_ERROR", "TIMEOUT", "BROWSER_ERROR", "ATTACHMENT_ERROR", "LOCK_BUSY"].includes(code)) return { retryable: true, category: code };
+  if (["MODEL_ERROR", "TOOL_ERROR", "CHANNEL_ERROR", "AUTH_ERROR", "TIMEOUT", "RUNTIME_LIMIT", "BROWSER_ERROR", "ATTACHMENT_ERROR", "LOCK_BUSY", "LOCK_LOST"].includes(code)) return { retryable: true, category: code };
   return { retryable: false, category: "UNKNOWN" };
 }

@@ -21,6 +21,7 @@ export const API_PATHS = {
   orderPolicy: "/api/businesses/:businessId/order-policy", pendingOrders: "/api/businesses/:businessId/pending-orders", orders: "/api/businesses/:businessId/orders", order: "/api/businesses/:businessId/orders/:orderId", orderAudits: "/api/businesses/:businessId/orders/:orderId/audits",
   attachments: "/api/businesses/:businessId/attachments", attachment: "/api/businesses/:businessId/attachments/:attachmentId", browserRuns: "/api/businesses/:businessId/browser-runs",
   clientKnowledge: "/api/client/businesses/:businessId/knowledge", clientOrders: "/api/client/businesses/:businessId/orders", clientOrder: "/api/client/businesses/:businessId/orders/:orderId", clientOrderPolicy: "/api/client/businesses/:businessId/order-policy", clientAttachments: "/api/client/businesses/:businessId/attachments",
+  eventOperations: "/api/businesses/:businessId/events", queueOperations: "/api/businesses/:businessId/work", workReplay: "/api/businesses/:businessId/work/:workId/replay", workCancel: "/api/businesses/:businessId/work/:workId/cancel",
 } as const;
 export const testRunRequestSchema = z.object({ businessId: ulidSchema, agentId: ulidSchema, testVersionId: ulidSchema.optional(), event: agentEventSchema, debug: z.boolean().default(false) });
 export const cursorQuerySchema = z.object({ cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).default(50) });
@@ -36,6 +37,7 @@ export const endpointCapabilities: Record<string, string> = {
   [API_PATHS.knowledge]: "knowledge.read", [API_PATHS.knowledgeSource]: "knowledge.read", [API_PATHS.knowledgeSearch]: "knowledge.read", [API_PATHS.customTools]: "custom_tool.manage", [API_PATHS.customTool]: "custom_tool.manage",
   [API_PATHS.orderPolicy]: "order_policy.manage", [API_PATHS.pendingOrders]: "commerce.read", [API_PATHS.orders]: "commerce.read", [API_PATHS.order]: "commerce.read", [API_PATHS.orderAudits]: "commerce.read", [API_PATHS.attachments]: "attachment.read", [API_PATHS.attachment]: "attachment.read", [API_PATHS.browserRuns]: "run.read",
   [API_PATHS.clientKnowledge]: "knowledge.read", [API_PATHS.clientOrders]: "commerce.read", [API_PATHS.clientOrder]: "commerce.read", [API_PATHS.clientOrderPolicy]: "order_policy.manage", [API_PATHS.clientAttachments]: "attachment.read",
+  [API_PATHS.eventOperations]: "queue.read", [API_PATHS.queueOperations]: "queue.read", [API_PATHS.workReplay]: "queue.replay", [API_PATHS.workCancel]: "queue.replay",
 };
 
 export function createTestRunHandler(authorizer: TrustedContextAuthorizer, runtime: AgentRuntime) {

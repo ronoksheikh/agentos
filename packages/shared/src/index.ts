@@ -27,7 +27,7 @@ export const trustedBusinessContextSchema = z.object({
 });
 
 export type TrustedBusinessContextData = z.infer<typeof trustedBusinessContextSchema>;
-export type TrustedBusinessContext = TrustedBusinessContextData & { cancellationSignal: AbortSignal };
+export type TrustedBusinessContext = TrustedBusinessContextData & { cancellationSignal: AbortSignal; includedInboundSequence?: number; conversationLease?: { assertOwner(): Promise<void> }; assertConversationFresh?: () => Promise<void> };
 
 export function createTrustedBusinessContext(
   data: TrustedBusinessContextData,

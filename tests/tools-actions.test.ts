@@ -26,6 +26,14 @@ describe("tools and actions", () => {
     expect((await registry.execute({ id: "3", name: "writer", arguments: { value: "x" } }, context, {}, policy, ["writer"])).status).toBe("DENIED"); expect(executions).toBe(0);
   });
 
+  test("checks conversation freshness before a write tool", async () => {
+    const registry = new ToolRegistry(); let executions = 0;
+    registry.register({ name: "write_once", description: "test", category: "demo", safetyClass: "WRITE", requiredCapabilities: [], inputSchema: z.object({}), outputSchema: z.object({ ok: z.boolean() }), redaction: { unsafeInputKeys: [], unsafeOutputKeys: [] }, async execute() { executions++; return { ok: true }; } });
+    const context = { ...trusted(), runId: ulid(), async assertConversationFresh() { throw new Error("STALE_CONVERSATION"); } };
+    const result = await registry.execute({ id: "stale", name: "write_once", arguments: {} }, context, {}, new DefaultToolPolicyEvaluator());
+    expect(result.status).toBe("FAILED"); expect(executions).toBe(0);
+  });
+
   test("reserves side effects idempotently and applies internal state once", async () => {
     const memories = new MemoryService(new InMemoryMemoryRepository()); const store = new InMemoryConversationStore(memories); store.seed({ businessId: ids.businessA, conversationId: ids.conversation, messages: [], pins: [], pendingGoals: [], announcements: [] });
     const repository = new InMemoryActionRepository(); const executor = new DeferredChannelActionExecutor(repository, store); const action = { id: ulid(), schemaVersion: "1.0" as const, type: "Remember" as const, idempotencyKey: "memory:1", memoryType: "preference", content: "blue", importance: 0.8, confidence: 0.9, sourceMessageIds: [] };

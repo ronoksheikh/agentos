@@ -13,10 +13,12 @@ export class PostgresOrderRepository {
     if (!context.capabilityGrants.includes("commerce.write")) throw new Error("FORBIDDEN");
     const pending = pendingOrderSchema.parse(unsafe); this.requireScope(context, pending.conversationId);
     if (pending.businessId !== context.businessId || pending.customerId !== (context.customerId ?? null)) throw new Error("PENDING_ORDER_SCOPE_DENIED");
+    await context.conversationLease?.assertOwner();
     await this.db.transaction(async (tx) => {
-      const conversation = (await tx.select({ id: schema.conversations.id }).from(schema.conversations).where(and(eq(schema.conversations.id, pending.conversationId), eq(schema.conversations.businessId, context.businessId))).limit(1))[0];
+      const conversation = (await tx.select({ id: schema.conversations.id, latestInboundSequence: schema.conversations.latestInboundSequence, ownership: schema.conversations.ownership }).from(schema.conversations).where(and(eq(schema.conversations.id, pending.conversationId), eq(schema.conversations.businessId, context.businessId))).limit(1).for("update"))[0];
       if (!conversation) throw new Error("CONVERSATION_NOT_FOUND");
-      const prior = (await tx.select().from(schema.pendingOrders).where(eq(schema.pendingOrders.id, pending.id)).limit(1))[0];
+      if (context.includedInboundSequence !== undefined && (conversation.latestInboundSequence !== context.includedInboundSequence || conversation.ownership !== "AI_ACTIVE")) throw new Error("STALE_CONVERSATION");
+      const prior = (await tx.select().from(schema.pendingOrders).where(eq(schema.pendingOrders.id, pending.id)).limit(1).for("update"))[0];
       if (prior && (prior.businessId !== context.businessId || prior.conversationId !== pending.conversationId || ["CREATED", "CANCELLED", "EXPIRED"].includes(prior.state))) throw new Error("PENDING_ORDER_CLOSED");
       const values = { state: pending.state, items: pending.items, fields: pending.fields, missingFields: pending.missingFields, paymentMethod: pending.paymentMethod, deliveryMethod: pending.deliveryMethod, confirmation: pending.confirmation, sourceMessageIds: pending.sourceMessageIds, history: pending.history, expiresAt: new Date(pending.expiresAt), updatedAt: new Date(pending.updatedAt) };
       if (prior) await tx.update(schema.pendingOrders).set(values).where(and(eq(schema.pendingOrders.id, pending.id), eq(schema.pendingOrders.businessId, context.businessId)));
@@ -37,7 +39,12 @@ export class PostgresOrderRepository {
     if (!context.capabilityGrants.includes("commerce.write") || !intentKey || intentKey.length > 200) throw new Error("ORDER_WRITE_DENIED");
     const order = orderSchema.parse(unsafe); this.requireScope(context, order.conversationId);
     if (order.businessId !== context.businessId || order.status !== "CONFIRMED" || order.items.some((item) => item.currency !== order.currency) || order.items.reduce((sum, item) => sum + item.totalMinor, 0) !== order.totalMinor) throw new Error("ORDER_SNAPSHOT_INVALID");
+    await context.conversationLease?.assertOwner();
     return this.db.transaction(async (tx) => {
+      if (context.includedInboundSequence !== undefined) {
+        const conversation = (await tx.select({ latestInboundSequence: schema.conversations.latestInboundSequence, ownership: schema.conversations.ownership }).from(schema.conversations).where(and(eq(schema.conversations.id, order.conversationId), eq(schema.conversations.businessId, context.businessId))).limit(1).for("update"))[0];
+        if (!conversation || conversation.latestInboundSequence !== context.includedInboundSequence || conversation.ownership !== "AI_ACTIVE") throw new Error("STALE_CONVERSATION");
+      }
       const pending = (await tx.select().from(schema.pendingOrders).where(and(eq(schema.pendingOrders.id, order.pendingOrderId), eq(schema.pendingOrders.businessId, context.businessId), eq(schema.pendingOrders.conversationId, order.conversationId))).limit(1).for("update"))[0];
       if (!pending) throw new Error("PENDING_ORDER_NOT_FOUND");
       const existing = (await tx.select({ id: schema.orders.id }).from(schema.orders).where(and(eq(schema.orders.businessId, context.businessId), eq(schema.orders.pendingOrderId, order.pendingOrderId))).limit(1))[0];

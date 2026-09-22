@@ -6,6 +6,8 @@ import { ulid } from "ulid";
 import * as schema from "@agentos/database";
 import { AgentRuntime } from "@agentos/agent-runtime";
 import { AgentVersionService } from "@agentos/agents";
+import { FakeCommerceAdapter, OrderService } from "@agentos/commerce";
+import { PostgresOrderRepository } from "@agentos/phase4-operations";
 import { DeferredChannelActionExecutor } from "@agentos/actions";
 import { InMemoryChannelRegistry, RegistryPresenceController } from "@agentos/channels";
 import { LayeredContextEngine } from "@agentos/context";
@@ -13,11 +15,12 @@ import { InMemoryConversationStore } from "@agentos/conversations";
 import { MemoryService } from "@agentos/memory";
 import { FakeModelProvider } from "@agentos/models";
 import { InMemoryActionRepository, InMemoryAgentVersionRepository, InMemoryMemoryRepository, InMemoryTraceRepository } from "@agentos/persistence";
-import { InboundGateway, Phase5Operations, Phase5Queues, Phase5Store, RedisConversationLease } from "@agentos/phase5";
+import { EventRouter, InboundGateway, Phase5Operations, Phase5Processor, Phase5Queues, Phase5Store, RedisConversationLease } from "@agentos/phase5";
 import { InMemoryRealtimeBus } from "@agentos/realtime";
 import { createTrustedBusinessContext } from "@agentos/shared";
 import { ToolRegistry } from "@agentos/tools";
 import { FakeWebChatAdapter, WebsiteContractService, WEB_CHAT_CHANNEL } from "@agentos/website-sdk";
+import { universalEventSchema } from "@agentos/events";
 import { createAgentFixture, ids } from "../tests/helpers";
 import { startPhase5Worker } from "../apps/worker/src/index";
 
@@ -55,6 +58,8 @@ try {
   for (const [i, text] of ["bhai", "black ta", "XL ache?"].entries()) { const result = await gateway.accept(adapter, await request(text, keys[i]!), trusted, { quietMs: 150, maxWaitMs: 500 }); assert.equal(result.duplicate, false); }
   assert.ok(Date.now() - started < 1_000, "acknowledgement did not wait for a model or worker");
   const duplicate = await gateway.accept(adapter, await request("bhai", keys[0]!), trusted, { quietMs: 150, maxWaitMs: 500 }); assert.equal(duplicate.duplicate, true);
+  await assert.rejects(() => gateway.accept(adapter, { headers: new Headers({ origin: "https://evil.example" }), body: new TextEncoder().encode("{}") }, trusted, { quietMs: 150, maxWaitMs: 500 }), /PERMISSION_ERROR/);
+  await assert.rejects(() => gateway.accept(adapter, { headers: new Headers({ origin: "https://shop.example", authorization: `Bearer ${bootstrap.sessionToken}` }), body: new TextEncoder().encode("not json") }, trusted, { quietMs: 150, maxWaitMs: 500 }), /VALIDATION_ERROR/);
   const messages = await db.select().from(schema.messages).where(eq(schema.messages.businessId, ids.businessA)).orderBy(schema.messages.inboundSequence);
   assert.deepEqual(messages.map((message) => message.inboundSequence), [1, 2, 3]); assert.deepEqual(messages.map((message) => message.externalMessageId), keys); assert.equal(messages[0]!.occurredAt.toISOString(), "2026-09-20T10:00:00.000Z");
   const batches = await db.select().from(schema.messageBatches).where(eq(schema.messageBatches.businessId, ids.businessA)); assert.equal(batches.length, 1); assert.deepEqual(batches[0]!.messageIds, messages.map((message) => message.id));
@@ -77,13 +82,69 @@ try {
   await until("notification retry", async () => (await store.getEffect(ids.businessA, notification.id!)).state === "COMPLETED");
   assert.equal((await db.select().from(schema.orders).where(eq(schema.orders.id, orderId)))[0]!.notificationState, "SENT");
   assert.equal((await db.select().from(schema.orders).where(eq(schema.orders.id, orderId))).length, 1);
+  const priorSends = adapter.executed.length; adapter.throwAfterNextExecute = true;
+  const ambiguous = await store.reserveEffect({ businessId: ids.businessA, conversationId: ids.conversation, traceId: ulid(), includedSequence: 3, runAt: new Date(), action: { id: ulid(), schemaVersion: "1.0", type: "SendMessage", idempotencyKey: `ambiguous:${ulid()}`, text: "Ambiguous outcome" } });
+  await until("ambiguous send recorded", async () => (await store.getEffect(ids.businessA, ambiguous.id)).state === "UNKNOWN");
+  assert.equal(adapter.executed.length, priorSends + 1);
+  const reconciler = new Phase5Processor({ store, runtime, registry, presence, router: new EventRouter(store) });
+  assert.equal(await reconciler.reconcileUnknownEffect(ids.businessA, ambiguous.id), "COMPLETED");
+  assert.equal(adapter.executed.length, priorSends + 1, "reconciliation must not resend");
   await stop();
+
+  // PostgreSQL order writes hold the conversation row and reject an older worker sequence.
+  const durableOrders = new PostgresOrderRepository(db);
+  const checkout = new OrderService(new FakeCommerceAdapter(new Map([["shirt", { id: "shirt", name: "Shirt", variants: [{ id: "XL", name: "XL", stock: 5, priceMinor: 1500 }], currency: "BDT" }]])));
+  const orderContext = createTrustedBusinessContext({ businessId: ids.businessA, principal: { kind: "system", service: "phase5-worker" }, source: "internal_system", agentId: ids.agent, conversationId: ids.conversation, customerId: ids.customer, traceId: ulid(), capabilityGrants: ["commerce.write"] });
+  orderContext.includedInboundSequence = 2;
+  checkout.setPolicy(orderContext, { enabled: true, fields: [], requireVariant: false, requireConfirmation: true, paymentMethods: ["COD"], deliveryMethods: ["HOME"], pendingExpiryMinutes: 60 });
+  const pendingOrder = checkout.start(orderContext, { channel: WEB_CHAT_CHANNEL });
+  await checkout.addItem(orderContext, pendingOrder.id, { reference: { productId: "shirt", variantId: "XL", source: "CATALOG", confirmed: true }, quantity: 1 });
+  checkout.collect(orderContext, pendingOrder.id, { paymentMethod: "COD", deliveryMethod: "HOME" });
+  const confirmedOrder = await checkout.confirm(orderContext, pendingOrder.id);
+  await assert.rejects(durableOrders.savePending(orderContext, confirmedOrder), /STALE_CONVERSATION/);
+  orderContext.includedInboundSequence = 3;
+  await durableOrders.savePending(orderContext, confirmedOrder);
+  const createdOrder = await checkout.createOrder(orderContext, pendingOrder.id, `phase5-order:${pendingOrder.id}`);
+  await db.update(schema.conversations).set({ latestInboundSequence: 4 }).where(eq(schema.conversations.id, ids.conversation));
+  await assert.rejects(durableOrders.commitOrder(orderContext, createdOrder.order, `phase5-order:${pendingOrder.id}`), /STALE_CONVERSATION/);
+  orderContext.includedInboundSequence = 4;
+  assert.equal((await durableOrders.commitOrder(orderContext, createdOrder.order, `phase5-order:${pendingOrder.id}`)).duplicate, false);
+  assert.equal((await durableOrders.commitOrder(orderContext, createdOrder.order, `phase5-order:${pendingOrder.id}`)).duplicate, true);
+
+  // Two worker instances cannot overlap a conversation run; new input suppresses its stale reply.
+  const freshnessConversation = ulid(); await db.insert(schema.conversations).values({ id: freshnessConversation, businessId: ids.businessA, customerId: ids.customer, agentId: ids.agent, channel: WEB_CHAT_CHANNEL });
+  conversations.seed({ businessId: ids.businessA, conversationId: freshnessConversation, customerId: ids.customer, messages: [], pins: [], pendingGoals: [], announcements: [] });
+  const staleReply = "XL is unavailable."; const freshReply = "XL is available now.";
+  const scripted = new FakeModelProvider([{ kind: "actions", actions: [{ id: ulid(), schemaVersion: "1.0", type: "SendMessage", idempotencyKey: `stale:${ulid()}`, text: staleReply }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }, { kind: "actions", actions: [{ id: ulid(), schemaVersion: "1.0", type: "SendMessage", idempotencyKey: `fresh:${ulid()}`, text: freshReply }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }]);
+  let signalFirstModel!: () => void; const firstModel = new Promise<void>((resolve) => { signalFirstModel = resolve; }); let modelCalls = 0; let activeModel = 0; let maxActiveModel = 0;
+  const delayedModel = { async generate(request: Parameters<typeof scripted.generate>[0]) { modelCalls++; activeModel++; maxActiveModel = Math.max(maxActiveModel, activeModel); if (modelCalls === 1) { signalFirstModel(); await pause(250); } const response = await scripted.generate(request); activeModel--; return response; } };
+  const freshnessRuntime = new AgentRuntime({ versions: new AgentVersionService(versions), contextEngine: new LayeredContextEngine(conversations), models: delayedModel, tools: new ToolRegistry(), actions: new DeferredChannelActionExecutor(new InMemoryActionRepository(), conversations), traces: new InMemoryTraceRepository(), realtime: new InMemoryRealtimeBus(), presence });
+  const freshContext = createTrustedBusinessContext({ businessId: ids.businessA, principal: { kind: "adapter", connectionId: site.id }, source: "verified_adapter", agentId: ids.agent, conversationId: freshnessConversation, customerId: ids.customer, traceId: ulid(), capabilityGrants: ["conversation.read"] });
+  const stopOne = await startPhase5Worker({ db, redisUrl, runtime: freshnessRuntime, registry, presence });
+  const stopTwo = await startPhase5Worker({ db, redisUrl, runtime: freshnessRuntime, registry, presence });
+  await gateway.accept(adapter, await request("Black M ache?", ulid()), freshContext, { quietMs: 0, maxWaitMs: 0 });
+  await firstModel;
+  await gateway.accept(adapter, { headers: (await request("XL lagbe", ulid())).headers, body: new TextEncoder().encode(JSON.stringify({ message: "XL lagbe", idempotencyKey: ulid(), urgent: true })) }, freshContext, { quietMs: 0, maxWaitMs: 0 });
+  await until("fresh reply after newer input", async () => adapter.executed.some((item) => item.action.type === "SendMessage" && item.action.text === freshReply));
+  assert.equal(adapter.executed.some((item) => item.action.type === "SendMessage" && item.action.text === staleReply), false);
+  assert.equal(maxActiveModel, 1);
+  await stopOne(); await stopTwo();
 
   const redisQueues = new Phase5Queues(store, redisUrl);
   const leaseA = new RedisConversationLease(redisQueues.redis, `agentos:conversation:${ids.businessA}:${ids.conversation}`);
   const leaseB = new RedisConversationLease(redisQueues.redis, `agentos:conversation:${ids.businessA}:${ids.conversation}`);
   const leaseOther = new RedisConversationLease(redisQueues.redis, `agentos:conversation:${secondBusiness}:${ulid()}`);
   assert.equal(await leaseA.acquire(), true); assert.equal(await leaseB.acquire(), false); assert.equal(await leaseOther.acquire(), true); await leaseA.release(); assert.equal(await leaseB.acquire(), true); await leaseB.release(); await leaseOther.release();
+  const expiryKey = `agentos:conversation:${ids.businessA}:${ulid()}`;
+  const expiring = new RedisConversationLease(redisQueues.redis, expiryKey, 80);
+  assert.equal(await expiring.acquire(), true);
+  await redisQueues.redis.del(expiryKey); // Simulate an expired lease while the old worker still runs.
+  const replacement = new RedisConversationLease(redisQueues.redis, expiryKey, 1_000);
+  assert.equal(await replacement.acquire(), true);
+  await assert.rejects(expiring.assertOwner(), /lease lost/);
+  await expiring.release();
+  assert.equal(await redisQueues.redis.get(expiryKey), replacement.token, "old owner cannot release a replacement lease");
+  await replacement.release();
 
   const fairnessConversations = Array.from({ length: 40 }, () => ulid()); const otherConversation = ulid();
   await db.insert(schema.conversations).values([...fairnessConversations.map((id) => ({ id, businessId: ids.businessA, channel: WEB_CHAT_CHANNEL })), { id: otherConversation, businessId: secondBusiness, channel: WEB_CHAT_CHANNEL }]);
@@ -97,16 +158,41 @@ try {
 
   const staleId = ulid(); await db.insert(schema.workItems).values({ id: staleId, businessId: ids.businessA, kind: "BROWSER", resourceId: ulid(), traceId: ulid(), state: "RUNNING", runAt: new Date(), updatedAt: new Date(Date.now() - 120_000) });
   assert.equal(await redisQueues.recover(60_000) >= 1, true); assert.equal((await store.getWork(ids.businessA, staleId)).state, "PENDING");
-  const deadId = ulid(); await db.insert(schema.workItems).values({ id: deadId, businessId: ids.businessA, kind: "BROWSER", resourceId: ulid(), traceId: ulid(), state: "DEAD", runAt: new Date() });
+  const deadId = ulid(); await db.insert(schema.workItems).values({ id: deadId, businessId: ids.businessA, kind: "EVENT", resourceId: ulid(), traceId: ulid(), state: "DEAD", runAt: new Date() });
   const operations = new Phase5Operations(store);
   await assert.rejects(() => operations.replay({ userId, role: "SUPPORT" }, { businessId: ids.businessA, workId: deadId, dryRun: false }), /FORBIDDEN/);
   assert.equal((await operations.replay({ userId, role: "ADMIN" }, { businessId: ids.businessA, workId: deadId })).replayed, false);
   assert.equal((await store.getWork(ids.businessA, deadId)).state, "DEAD");
   assert.equal((await operations.replay({ userId, role: "ADMIN" }, { businessId: ids.businessA, workId: deadId, dryRun: false })).replayed, true);
+  const cancelledId = ulid(); await db.insert(schema.workItems).values({ id: cancelledId, businessId: ids.businessA, kind: "BROWSER", resourceId: ulid(), traceId: ulid(), state: "PENDING", runAt: new Date() });
+  assert.equal((await operations.cancel({ userId, role: "ADMIN" }, ids.businessA, cancelledId)).cancelled, true); assert.equal((await store.getWork(ids.businessA, cancelledId)).state, "CANCELLED");
 
   const goalId = ulid(); await db.insert(schema.pendingGoals).values({ id: goalId, businessId: ids.businessA, customerId: ids.customer, conversationId: ids.conversation, type: "follow_up", description: "Follow up", state: "PENDING", triggerType: "TIME", trigger: { at: new Date(Date.now() - 1_000).toISOString() }, createdBy: userId, idempotencyKey: `goal:${goalId}`, traceId: ulid() });
   assert.equal(await store.scheduleDueGoals(), 1); assert.equal(await store.scheduleDueGoals(), 0);
   assert.equal((await db.select().from(schema.goalExecutions).where(and(eq(schema.goalExecutions.businessId, ids.businessA), eq(schema.goalExecutions.goalId, goalId)))).length, 1);
+  const inventoryGoalId = ulid(); const customGoalId = ulid();
+  await db.insert(schema.pendingGoals).values([{ id: inventoryGoalId, businessId: ids.businessA, customerId: ids.customer, conversationId: ids.conversation, type: "stock", description: "Black XL returns", state: "PENDING", triggerType: "INVENTORY", trigger: { productId: "black-shirt", variantId: "XL" }, createdBy: userId, idempotencyKey: `goal:${inventoryGoalId}`, traceId: ulid() }, { id: customGoalId, businessId: ids.businessA, customerId: ids.customer, conversationId: ids.conversation, type: "custom", description: "Custom event", state: "PENDING", triggerType: "EVENT", trigger: { eventType: "custom.triggered", name: "shipment_ready" }, createdBy: userId, idempotencyKey: `goal:${customGoalId}`, traceId: ulid() }]);
+  const eventBase = { id: ulid(), schemaVersion: "1.0", businessId: ids.businessA, channel: WEB_CHAT_CHANNEL, connectionId: site.id, conversationId: ids.conversation, customerId: ids.customer, dedupeKey: ulid(), occurredAt: new Date().toISOString(), receivedAt: new Date().toISOString(), traceId: ulid(), rawEventId: ulid(), source: { kind: "system" } };
+  const inventoryEvent = universalEventSchema.parse({ ...eventBase, type: "inventory.updated", payload: { productId: "black-shirt", variantId: "XL", available: 4 } });
+  const customEvent = universalEventSchema.parse({ ...eventBase, id: ulid(), dedupeKey: ulid(), type: "custom.triggered", payload: { name: "shipment_ready" } });
+  assert.deepEqual(await store.activateGoals(inventoryEvent), [inventoryGoalId]); assert.deepEqual(await store.activateGoals(inventoryEvent), []);
+  assert.deepEqual(await store.activateGoals(customEvent), [customGoalId]); assert.deepEqual(await store.activateGoals(customEvent), []);
+  assert.equal((await db.select().from(schema.goalExecutions).where(eq(schema.goalExecutions.businessId, ids.businessA))).length, 3);
+  const router = new EventRouter(store);
+  const deliveryEvent = universalEventSchema.parse({ ...eventBase, id: ulid(), dedupeKey: ulid(), type: "message.delivered", payload: { externalMessageId: keys[0], at: new Date().toISOString() } });
+  await router.process(deliveryEvent, new AbortController().signal);
+  const delivered = (await db.select().from(schema.messages).where(eq(schema.messages.id, messages[0]!.id)))[0]!;
+  assert.ok((delivered.lifecycle as Record<string, string>)["message.delivered"]);
+  const commentEvent = universalEventSchema.parse({ ...eventBase, id: ulid(), dedupeKey: ulid(), type: "comment.created", payload: { externalCommentId: "comment-1" } });
+  await db.insert(schema.universalEvents).values({ id: commentEvent.id, businessId: ids.businessA, connectionId: site.id, channel: WEB_CHAT_CHANNEL, conversationId: ids.conversation, customerId: ids.customer, schemaVersion: "1.0", type: commentEvent.type, dedupeKey: commentEvent.dedupeKey, payload: commentEvent.payload, source: commentEvent.source, traceId: commentEvent.traceId, state: "PENDING", occurredAt: new Date(commentEvent.occurredAt), receivedAt: new Date(commentEvent.receivedAt) });
+  await router.process(commentEvent, new AbortController().signal);
+  assert.equal((await db.select().from(schema.universalEvents).where(eq(schema.universalEvents.id, commentEvent.id)))[0]!.state, "IGNORED");
+  assert.equal((await operations.inspect({ userId, role: "SUPPORT" }, secondBusiness)).events.length, 0);
+  await assert.rejects(() => store.getWork(secondBusiness, deadId), /WORK_NOT_FOUND/);
+  await db.update(schema.rawInboundEvents).set({ retentionUntil: new Date(Date.now() - 1_000) }).where(eq(schema.rawInboundEvents.id, messages[0]!.rawEventSourceRef!));
+  assert.ok(await store.purgeExpiredRaw() >= 1);
+  assert.equal((await db.select().from(schema.rawInboundEvents).where(eq(schema.rawInboundEvents.id, messages[0]!.rawEventSourceRef!)))[0]!.state, "PURGED");
+  assert.equal((await store.getEvent(ids.businessA, batches[0]!.eventIds[0]!)).type, "message.received");
   await redisQueues.close();
   console.log("Phase 5 PostgreSQL/Redis integration passed: dedupe, ordered batching, fake adapter delivery, notification retry, leases, 40-conversation fairness, recovery, replay authorization, and one-shot goals.");
 } finally { await pool.end(); }

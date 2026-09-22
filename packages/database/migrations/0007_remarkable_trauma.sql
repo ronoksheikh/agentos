@@ -1,0 +1,1 @@
+ALTER TABLE "raw_inbound_events" ADD COLUMN "duplicate_count" integer DEFAULT 0 NOT NULL;

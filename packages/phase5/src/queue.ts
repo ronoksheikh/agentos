@@ -66,11 +66,11 @@ export class Phase5Queues {
       try {
         globalHeld = await this.slot("agentos:slot:global", concurrency, token, timeoutMs); if (!globalHeld) { await this.store.reschedule(ref.businessId, ref.workId, new Date(Date.now() + 250), "GLOBAL_BUSY"); return; }
         if (connectionSlot) { connectionHeld = await this.slot(connectionSlot, connectionCap, token, timeoutMs); if (!connectionHeld) { await this.store.reschedule(ref.businessId, ref.workId, new Date(Date.now() + 250), "CONNECTION_BUSY"); return; } }
-        if (work.conversationId) { lease = new RedisConversationLease(this.redis, `agentos:conversation:${ref.businessId}:${work.conversationId}`); if (!await lease.acquire()) { await this.store.reschedule(ref.businessId, ref.workId, new Date(Date.now() + 250), "LOCK_BUSY"); return; } }
+        if (work.conversationId) { lease = new RedisConversationLease(this.redis, `agentos:conversation:${ref.businessId}:${work.conversationId}`); if (!await lease.acquire()) { await this.redis.incr(`agentos:metric:lock_contention:${ref.businessId}`); await this.store.reschedule(ref.businessId, ref.workId, new Date(Date.now() + 250), "LOCK_BUSY"); return; } }
         const started = await this.store.startWork(ref.businessId, ref.workId);
         if (!started) return; work = started;
         const abort = new AbortController(); const timer = setTimeout(() => abort.abort("TIMEOUT"), timeoutMs);
-        const poll = setInterval(() => { void this.store.getWork(ref.businessId, ref.workId).then((latest) => { if (latest.state === "CANCELLED") abort.abort("CANCELLED"); }).catch(() => abort.abort("WORK_UNAVAILABLE")); }, 1_000);
+        const poll = setInterval(() => { void this.store.getWork(ref.businessId, ref.workId).then(async (latest) => { if (latest.state === "CANCELLED") abort.abort("CANCELLED"); else if (latest.state === "RUNNING") await this.store.db.update(dbs.workItems).set({ updatedAt: new Date() }).where(and(eq(dbs.workItems.id, ref.workId), eq(dbs.workItems.businessId, ref.businessId), eq(dbs.workItems.state, "RUNNING"))); }).catch(() => abort.abort("WORK_UNAVAILABLE")); }, 1_000);
         try { await handler(work, abort.signal, lease); if (abort.signal.aborted) throw Object.assign(new Error("Work aborted"), { code: String(abort.signal.reason) }); await lease?.assertOwner(); const latest = await this.store.getWork(ref.businessId, ref.workId); if (latest.state === "RUNNING") await this.store.finishWork(ref.businessId, ref.workId, "COMPLETED"); }
         catch (error) { const code = error instanceof Error && "code" in error ? String(error.code) : abort.signal.aborted ? String(abort.signal.reason) : "UNKNOWN"; const classification = classifyFailure(code); if (code === "CANCELLED") await this.store.finishWork(ref.businessId, ref.workId, "CANCELLED", code); else if (classification.retryable && work.attempt < work.maxAttempts) await this.store.reschedule(ref.businessId, ref.workId, new Date(Date.now() + Math.min(30_000, 500 * 2 ** (work.attempt - 1))), code); else await this.store.finishWork(ref.businessId, ref.workId, "DEAD", code); }
         finally { clearTimeout(timer); clearInterval(poll); }
@@ -80,8 +80,16 @@ export class Phase5Queues {
     const pumpTimer = setInterval(() => { void this.pump().catch(() => {}); }, 250);
     const recoveryTimer = setInterval(() => { void this.recover().catch(() => {}); }, 30_000);
     const goalTimer = setInterval(() => { void this.store.scheduleDueGoals().catch(() => {}); }, 15_000);
-    return async () => { clearInterval(pumpTimer); clearInterval(recoveryTimer); clearInterval(goalTimer); await Promise.all(workers.map((worker) => worker.close())); };
+    const retentionTimer = setInterval(() => { void this.store.purgeExpiredRaw().catch(() => {}); }, 3_600_000);
+    return async () => { clearInterval(pumpTimer); clearInterval(recoveryTimer); clearInterval(goalTimer); clearInterval(retentionTimer); await Promise.all(workers.map((worker) => worker.close())); };
   }
-  async metrics() { return Object.fromEntries(await Promise.all(kinds.map(async (kind) => [kind, await this.queues[kind].getJobCounts("waiting", "active", "delayed", "failed")]))); }
+  async metrics(): Promise<Record<WorkKind, { waiting?: number; active?: number; delayed?: number; failed?: number }>> { return Object.fromEntries(await Promise.all(kinds.map(async (kind) => [kind, await this.queues[kind].getJobCounts("waiting", "active", "delayed", "failed")]))) as Record<WorkKind, { waiting?: number; active?: number; delayed?: number; failed?: number }>; }
+  async activeLocks(businessId: string) {
+    const locks: Array<{ conversationId: string; ttlMs: number }> = [];
+    let cursor = "0";
+    do { const [next, keys] = await this.redis.scan(cursor, "MATCH", `agentos:conversation:${businessId}:*`, "COUNT", 100); cursor = next; for (const key of keys) locks.push({ conversationId: key.slice(`agentos:conversation:${businessId}:`.length), ttlMs: await this.redis.pttl(key) }); } while (cursor !== "0" && locks.length < 500);
+    return locks;
+  }
+  async lockContention(businessId: string) { return Number(await this.redis.get(`agentos:metric:lock_contention:${businessId}`) ?? 0); }
   async close() { await Promise.all(Object.values(this.queues).map((queue) => queue.close())); await this.redis.quit(); }
 }

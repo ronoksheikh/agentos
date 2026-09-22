@@ -20,14 +20,15 @@ const order = z.object({ ...base, type: z.enum(["order.created", "order.updated"
 const inventory = z.object({ ...base, type: z.literal("inventory.updated"), payload: z.object({ productId: reference, variantId: reference.optional(), available: z.number().int().nonnegative() }) });
 const scheduled = z.object({ ...base, type: z.literal("scheduled.triggered"), payload: z.object({ goalId: ulidSchema }) });
 const handoff = z.object({ ...base, type: z.literal("handoff.resolved"), payload: z.object({ handoffId: ulidSchema }) });
-export const universalEventSchema = z.union([message, attachment, comment, reaction, delivery, order, inventory, scheduled, handoff]);
+const custom = z.object({ ...base, type: z.literal("custom.triggered"), payload: z.object({ name: z.string().min(1).max(100), referenceId: reference.optional() }) });
+export const universalEventSchema = z.union([message, attachment, comment, reaction, delivery, order, inventory, scheduled, handoff, custom]);
 export type UniversalEvent = z.infer<typeof universalEventSchema>;
 
 export const rawEventRecordSchema = z.object({
   id: ulidSchema, businessId: ulidSchema, connectionId: ulidSchema, channel: z.string().min(1).max(100),
   dedupeKey: reference, externalEventId: reference.optional(), payloadSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  payloadBytes: z.number().int().nonnegative(), receivedAt: isoDateTimeSchema, retentionUntil: isoDateTimeSchema,
-  state: z.enum(["RECEIVED", "NORMALIZED", "REJECTED", "DUPLICATE"]), safeCode: z.string().max(100).optional(),
+  payloadBytes: z.number().int().nonnegative(), duplicateCount: z.number().int().nonnegative().default(0), receivedAt: isoDateTimeSchema, retentionUntil: isoDateTimeSchema,
+  state: z.enum(["RECEIVED", "NORMALIZED", "REJECTED", "DUPLICATE", "PURGED"]), safeCode: z.string().max(100).optional(),
 });
 export type RawEventRecord = z.infer<typeof rawEventRecordSchema>;
 

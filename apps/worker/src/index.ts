@@ -3,6 +3,8 @@ import type { AgentRuntime } from "@agentos/agent-runtime";
 import type { ChannelRegistry, PresenceController } from "@agentos/channels";
 import type { RealtimeBus } from "@agentos/realtime";
 import { EventRouter, Phase5Processor, Phase5Queues, Phase5Store } from "@agentos/phase5";
+import { eq } from "drizzle-orm";
+import { effectIntents } from "@agentos/database";
 
 export interface WorkerDependencies {
   db: NodePgDatabase; redisUrl: string; runtime: AgentRuntime; registry: ChannelRegistry; presence: PresenceController;
@@ -19,7 +21,8 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
   await store.scheduleDueGoals();
   const stopWorkers = queues.start((work, signal, lease) => processor.handle(work, signal, lease));
   await queues.pump();
-  return async () => { await stopWorkers(); await queues.close(); };
+  const reconciliationTimer = setInterval(() => { void store.db.select({ id: effectIntents.id, businessId: effectIntents.businessId }).from(effectIntents).where(eq(effectIntents.state, "UNKNOWN")).limit(50).then((effects) => Promise.all(effects.map((effect) => processor.reconcileUnknownEffect(effect.businessId, effect.id).catch(() => "UNKNOWN")))).catch(() => {}); }, 30_000);
+  return async () => { clearInterval(reconciliationTimer); await stopWorkers(); await queues.close(); };
 }
 
 if (import.meta.main) {

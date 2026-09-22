@@ -18,7 +18,7 @@ export const agentEventSchema = z.discriminatedUnion("type", [
   z.object({
     ...eventBase,
     type: z.literal("message.received"),
-    payload: z.object({ messageId: ulidSchema, text: z.string().max(100_000).optional(), attachmentIds: z.array(ulidSchema).max(20).default([]), inboundSequence: z.number().int().positive() }),
+    payload: z.object({ messageId: ulidSchema, text: z.string().max(100_000).optional(), attachmentIds: z.array(ulidSchema).max(20).default([]), inboundSequence: z.number().int().positive(), urgent: z.boolean().optional() }),
   }),
   z.object({
     ...eventBase,
