@@ -57,6 +57,13 @@
       "when": 1790112323219,
       "tag": "0007_remarkable_trauma",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790113849668,
+      "tag": "0008_hot_magdalene",
+      "breakpoints": true
     }
   ]
 }

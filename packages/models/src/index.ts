@@ -28,3 +28,4 @@ export class FakeModelProvider implements ModelProvider {
     return { ...structuredClone(entry), provider: this.provider, model: this.model, latencyMs: 0 } as ModelResponse;
   }
 }
+export { OpenAIResponsesProvider } from "./openai";

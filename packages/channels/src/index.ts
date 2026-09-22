@@ -44,10 +44,16 @@ export class RegistryPresenceController implements PresenceController {
   constructor(private readonly registry: ChannelRegistry) {}
   async transition(context: TrustedBusinessContext, channel: string, state: PresenceLifecycleState): Promise<void> {
     const adapter = this.registry.resolve(channel); if (!adapter) return;
-    const capabilities = await adapter.capabilities(context);
     const key = `${context.businessId}:${context.conversationId ?? "none"}:${context.traceId}`;
+    if (["SENT", "FAILED", "CANCELLED", "SUPPRESSED", "TIMEOUT", "HANDOFF", "PAUSED", "DISCONNECTED"].includes(state)) {
+      const wasTyping = this.typing.has(key); this.typing.delete(key); this.seen.delete(key);
+      if (wasTyping) await adapter.presence(context, "TYPING_OFF").catch(() => {});
+      return;
+    }
+    const capabilities = await adapter.capabilities(context);
     if (state === "PROCESSING" && capabilities.canMarkSeen && !this.seen.has(key)) { await adapter.presence(context, "MARK_SEEN"); this.seen.add(key); }
     if (state === "COMPOSING" && capabilities.canShowTyping) { const prior = this.typing.get(key); if (!prior) { await adapter.presence(context, "TYPING_ON"); this.typing.set(key, Date.now()); } else if (Date.now() - prior >= 8_000) { await adapter.presence(context, "TYPING_REFRESH"); this.typing.set(key, Date.now()); } }
-    if (["SENT", "FAILED", "CANCELLED", "SUPPRESSED", "TIMEOUT", "HANDOFF", "PAUSED", "DISCONNECTED"].includes(state)) { if (capabilities.canShowTyping && this.typing.has(key)) await adapter.presence(context, "TYPING_OFF"); this.typing.delete(key); this.seen.delete(key); }
   }
 }
+
+export * from "./facebook-messenger";
