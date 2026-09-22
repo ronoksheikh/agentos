@@ -38,9 +38,11 @@ The project is a TypeScript modular monolith in one Bun-managed monorepo: Node.j
 | 4 | `plan4.md` | Multi-source knowledge, conversational orders and commerce tools, dashboard-configured business/custom tools, browser/search, multimodal attachment pipeline, advanced context | High-volume processor infrastructure, Meta |
 | 5 | `plan5.md` | Universal event path, registry/presence lifecycle, BullMQ work, buffering, serialization, retry/idempotency, schedules/background jobs | Production channel adapter and comment automation |
 | 6 | `plan6.md` | First production `FacebookMessengerAdapter`: OAuth/manual Page setup, gated verification/test flow, secure Meta credentials, plus a real Browser Use-backed browser adapter for existing web tools | All other production channel adapters, comment policy/replies, final hardening |
-| 7 | `plan7.md` | Comment Processing Unit, analytics, trial lifecycle, production hardening/evaluation | Incremental additional channels/features |
+| 7 | `plan7.md` | Comment Processing Unit, real Web Chat adapter, self-hosted open-source Browser Use AI browser agent replacing the Phase 6 custom CDP production path, configurable OpenAI SDK/compatible model and ElevenLabs providers, analytics, trial lifecycle, production hardening/evaluation | Instagram/Telegram/WhatsApp and incremental later features |
 
 Cross-cutting foundations may appear earlier when later work needs a stable contract. For example, Phase 1 establishes trusted tenant context and realtime envelopes; Phase 2 implements full agency authentication/configuration UX; Phase 3 extends access to business users. Earlier contracts are not permission to build later product features prematurely.
+
+Phase 6's completion note records a custom isolated CDP/Chromium browser implementation and incomplete live Meta/full browser verification, despite the earlier Browser Use intent in `plan6.md`. Phase 7 explicitly replaces that production browser path with the self-hosted open-source `browser-use/browser-use` AI browser agent, completes those verification gates, and activates real Web Chat. Treat `plan6.md` as historical phase scope, its completion note as delivered evidence, and `plan7.md` as the current cutover requirement.
 
 ## Global invariants every phase must preserve
 
