@@ -14,6 +14,7 @@ export class ClientApi {
   activity(principal: AuthenticatedPrincipal, businessId: string, runId: string) { return this.deps.dashboard.activities(this.deps.actors.resolve(principal, businessId, "run.read"), runId); }
   handoffs(principal: AuthenticatedPrincipal, businessId: string) { return this.deps.handoffs.list(this.handoffActor(principal, businessId, "conversation.read")); }
   takeOver(principal: AuthenticatedPrincipal, businessId: string, handoffId: string) { return this.deps.handoffs.takeOver(this.handoffActor(principal, businessId, "handoff.manage"), handoffId); }
+  openExternal(principal: AuthenticatedPrincipal, businessId: string, handoffId: string, channelCanOpen: boolean) { return this.deps.handoffs.openExternalChat(this.handoffActor(principal, businessId, "conversation.read"), handoffId, channelCanOpen); }
   resolve(principal: AuthenticatedPrincipal, businessId: string, handoffId: string, resolution: string) { return this.deps.handoffs.resolve(this.handoffActor(principal, businessId, "handoff.manage"), handoffId, resolution); }
   resume(principal: AuthenticatedPrincipal, businessId: string, handoffId: string) { return this.deps.handoffs.resumeAgent(this.handoffActor(principal, businessId, "handoff.manage"), handoffId); }
   acknowledge(principal: AuthenticatedPrincipal, businessId: string, notificationId: string) { return this.deps.handoffs.acknowledgeNotification(this.handoffActor(principal, businessId, "notification.manage"), notificationId); }
