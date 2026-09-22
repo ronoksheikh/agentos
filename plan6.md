@@ -6,16 +6,18 @@
 2. Read all available completion notes through `docs/completion/phase5.md`.
 3. Inspect actual universal event, queue, lock, action idempotency, attachment, handoff, credentials, channel capability, and dashboard contracts.
 4. Verify current Meta requirements, permissions, webhook signatures, token behavior, and permitted capabilities from authoritative Meta documentation during implementation. Do not copy speculative API names or URLs from this planning document.
+5. Verify the current Browser Use TypeScript integration, runtime requirements, and local-browser support from its official documentation before replacing Phase 4's fake browser adapter in non-test composition.
 
 ## Goal
 
-Deliver the first and only initial production channel implementation: `FacebookMessengerAdapter`. It is the reference implementation of the shared `ChannelAdapter` contract, translating Meta Messenger inbound/outbound behavior through Universal Events and Universal Channel Actions while keeping Meta credentials business-scoped, secret-safe, observable, and out of AgentOS core.
+Deliver the first and only initial production channel implementation: `FacebookMessengerAdapter`. It is the reference implementation of the shared `ChannelAdapter` contract, translating Meta Messenger inbound/outbound behavior through Universal Events and Universal Channel Actions while keeping Meta credentials business-scoped, secret-safe, observable, and out of AgentOS core. Also connect a real Browser Use-backed browser implementation to the existing Phase 4 browser contracts so approved browser tools can operate a real browser; this is a tool provider, not another channel adapter.
 
 ## Inherited From Previous Phases
 
 - Runtime accepts only normalized events and returns Universal Channel Actions; processors own execution policy and adapters own channel calls.
 - Unified `ChannelAdapter` inbound contract, `ChannelRegistry`, raw-event persistence, rapid acknowledgement, queues, dedupe, buffering, locks, `ResponseTimingPolicy`/`PresenceController`, retry/idempotency, cancellation, action lifecycle, and safe realtime.
 - Generalized encrypted credential references, business/channel connection model, attachment pipeline, handoff ownership, capabilities, client/agency RBAC and audit rules.
+- Phase 4 `BrowserAdapter`/`BrowserExecutionService`/`BrowserCoordinator` policy boundary and Phase 5 BROWSER work queue; their current fake browser adapter is for deterministic tests only.
 
 Do not pass a Meta webhook body to `AgentRuntime`, call a model/browser while a webhook is open, store page tokens in plaintext, send tokens to a model/UI/log/trace, or create Messenger-specific branches in core tools/context/runtime.
 
@@ -28,6 +30,7 @@ Do not pass a Meta webhook body to `AgentRuntime`, call a model/browser while a 
 - Normalized mapping and source metadata contract for Messenger messages, attachments, deliveries, reads, and reserved `comment.created` events.
 - Messenger capability declaration and adapter mapping for `SendMessage`, `SendImage`, `SendFile` where verified, `ReplyToMessage`, `ReactToMessage` where verified, mark-seen, typing on/off, delivery/read state, and external-open behavior; unavailable Universal Channel Actions must fail with a typed capability error, not improvisation.
 - Secure connection/onboarding/re-authorization workflow and redacted operational health contract.
+- A production Browser Use-backed adapter/composition for the existing browser boundary, with an isolated browser execution environment, session lifecycle, cancellation, progress, and safe result projection. Keep the fake adapter for tests.
 
 ## Scope
 
@@ -102,6 +105,14 @@ Agency UI: business pages/connections list, OAuth and Manual Setup entry points,
 
 Client UI: Facebook conversation filtering, safe realtime view, handoff external-open action/reference, delivery/send failure status, and connection health appropriate to role. Both use existing Next.js/Mantine rules and role/tenant enforcement; neither can view/edit stored token material.
 
+### Real Browser Use execution for existing browser tools
+
+Replace fake-only browser composition for approved non-test runs with an adapter from the Browser Use project family. The main `browser-use/browser-use` open-source library is Python, while AgentOS remains TypeScript; evaluate the official TypeScript Browser Use Pi package (`@browser_use/pi`) and its local Chrome option first. Verify its current Bun/Node requirements and upgrade the project's declared Bun/runtime versions coherently if needed. Do not introduce Python into `AgentRuntime`, silently switch to paid Browser Use Cloud, or assume that an SDK's worker is a security sandbox. If the current TypeScript Browser Use API cannot satisfy the existing `BrowserAdapter`/`BrowserExecutionService` methods safely, document the concrete mismatch and use a small TypeScript Browser Use ecosystem/CDP adapter only with a deliberate, compatible contract decision.
+
+Run the real browser in a dedicated, isolated worker/container within the same monorepo and Phase 5 BROWSER work topology. Keep business/run/session ownership, domain and egress policy, per-run limits, timeouts, cancellation, storage and screenshot redaction, credential-vault access, safe activity events, and cleanup/recovery under the existing `BrowserCoordinator`. Never give browser-generated code unrestricted access to AgentOS files, database credentials, or unrelated network destinations. The fake adapter remains for deterministic tests; non-test composition must use the real adapter or fail closed with a visible unavailable status, never quietly return fixture data.
+
+Prove open/navigation, click, type, extract, screenshot reference, close, cancellation, timeout, policy denial, and safe progress against a controlled test site using a real browser. Where Browser Use offers a higher-level autonomous task interface, keep its output bounded and untrusted and do not let it bypass existing tool permissions or perform unapproved side effects. Browser work remains separate from Messenger webhook acknowledgement and channel presence timing.
+
 ### API, data, operations, and tests
 
 Use new migrations for connection/page metadata, credential references/audit, external message/thread mappings, page settings/capabilities, health/re-auth notifications, and any source mapping required. Do not alter historical migrations. APIs authorize agency/client scope and keep credential writes server-side; client-facing APIs expose safe connection status only.
@@ -120,6 +131,7 @@ Add health metrics for webhook volume/verification failures, normalized-event la
 - Credential/redaction: ciphertext/reference only at rest and no token in logs, audit, API, WS, client UI, model input, or trace projection; reauth/error state works.
 - Capability/activity/handoff: unsupported action typed failure; queued/buffered messages do not mark seen; seen begins only after worker acquisition; typing begins only at final composition and stops reliably on every terminal state; page settings respected; external-open URL only when verified; human takeover blocks automation.
 - Existing fake WebChat contract/event/queue/client tests remain green; no production WebChat adapter is introduced.
+- Real-browser integration: a controlled local test site proves all supported browser operations, isolated sessions, domain/egress denial, cancellation/timeout, screenshot handling, worker recovery, safe realtime progress, and fail-closed behavior when browser infrastructure is unavailable. Fake adapter tests remain deterministic and are not presented as proof of real-browser operation.
 
 ## Do Not Build Yet
 
@@ -138,7 +150,8 @@ Phase 7 activates normalized Facebook comments through the specialized Comment P
 5. Customer identity, messages, attachments, buffering, ownership/handoffs, realtime, retries, and idempotency preserve tenant/channel contracts.
 6. Agency/client dashboards safely manage/view page operations without credential exposure.
 7. Current-Meta contract tests and all integration/security/regression tests pass.
+8. Approved non-test browser work uses a verified, isolated Browser Use-backed TypeScript adapter through the existing browser tools and Phase 5 BROWSER queue; real-browser integration tests pass and fake-only results cannot be mistaken for production behavior.
 
 ## Completion Note
 
-After implementation, write `docs/completion/phase6.md` with verified Meta assumptions/version, page connection fields/states, webhook/normalization mappings, adapter capabilities, credential handling, migrations/APIs, tests, limitations, and deviations. Phase 7 must read it first.
+After implementation, write `docs/completion/phase6.md` with verified Meta assumptions/version, page connection fields/states, webhook/normalization mappings, adapter capabilities, credential handling, Browser Use package/runtime choice and isolation model, real-browser test evidence, migrations/APIs, tests, limitations, and deviations. Phase 7 must read it first.
