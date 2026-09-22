@@ -8,6 +8,7 @@ import { PostgresAttachmentRepository, PostgresCustomToolIntentStore, PostgresKn
 import { PostgresOrderRepository } from "@agentos/phase4-operations";
 import { FakeCommerceAdapter, OrderService } from "@agentos/commerce";
 import { AttachmentService, InMemoryObjectStorage } from "@agentos/attachments";
+import { CustomToolCatalog } from "@agentos/integrations";
 import { createTrustedBusinessContext } from "@agentos/shared";
 
 if (process.env.AGENTOS_PHASE4_SMOKE_DB !== "1" || !process.env.DATABASE_URL?.includes("agentos_phase4")) throw new Error("Run only against an isolated agentos_phase4 database");
@@ -54,6 +55,9 @@ try {
   await assert.rejects(service.updateOrderStatus(other, orderId, "SHIPPED", "status-other"), /ORDER_NOT_FOUND/);
   const toolId = await service.saveCustomTool(context, { name: `lookup_${ulid().toLowerCase()}`, description: "Safe read", type: "HTTP_API", method: "GET", baseUrl: "https://api.example.com", pathTemplate: "/lookup", inputSchema: { query: "string" }, outputSchema: { value: "string" }, outputMapping: { value: "value" }, timeoutMs: 1000, allowedHosts: ["api.example.com"], safeHeaders: {}, credentialRef: null, requiredCapabilities: ["custom_tool.execute"], allowedAgentIds: [], safetyClass: "READ", enabled: false, maxRequestBytes: 1000, maxResponseBytes: 1000 });
   assert.equal((await db.select().from(customTools).where(eq(customTools.id, toolId)))[0]?.businessId, businessId);
+  const loadedTool = (await service.listCustomToolDefinitions(context)).find((item) => item.id === toolId)!;
+  const catalog = new CustomToolCatalog({ async resolve() { throw new Error("NO_CREDENTIAL"); } });
+  assert.equal(catalog.loadPersisted(context, loadedTool).id, toolId);
   const toolIntents = new PostgresCustomToolIntentStore(db); const execution = { ...context, runId: ulid() };
   assert.deepEqual(await toolIntents.reserve(execution, toolId, "write-1", "hash-1"), { status: "NEW" });
   await toolIntents.markUnknown(execution, toolId, "write-1"); assert.equal((await toolIntents.inspect(execution, toolId, "write-1", "hash-1"))?.status, "UNKNOWN");
