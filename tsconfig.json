@@ -15,6 +15,7 @@
     "types": ["bun", "node"],
     "baseUrl": ".",
     "paths": {
+      "@agentos/website-sdk/client": ["packages/website-sdk/src/client.ts"],
       "@agentos/*": ["packages/*/src/index.ts"]
     }
   },

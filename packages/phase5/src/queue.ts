@@ -80,7 +80,7 @@ export class Phase5Queues {
     const pumpTimer = setInterval(() => { void this.pump().catch(() => {}); }, 250);
     const recoveryTimer = setInterval(() => { void this.recover().catch(() => {}); }, 30_000);
     const goalTimer = setInterval(() => { void this.store.scheduleDueGoals().catch(() => {}); }, 15_000);
-    const retentionTimer = setInterval(() => { void this.store.purgeExpiredRaw().catch(() => {}); }, 3_600_000);
+    const retentionTimer = setInterval(() => { void Promise.all([this.store.purgeExpiredRaw(), this.store.purgeExpiredWebChatRateBuckets()]).catch(() => {}); }, 3_600_000);
     return async () => { clearInterval(pumpTimer); clearInterval(recoveryTimer); clearInterval(goalTimer); clearInterval(retentionTimer); await Promise.all(workers.map((worker) => worker.close())); };
   }
   async metrics(): Promise<Record<WorkKind, { waiting?: number; active?: number; delayed?: number; failed?: number }>> { return Object.fromEntries(await Promise.all(kinds.map(async (kind) => [kind, await this.queues[kind].getJobCounts("waiting", "active", "delayed", "failed")]))) as Record<WorkKind, { waiting?: number; active?: number; delayed?: number; failed?: number }>; }

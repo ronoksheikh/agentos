@@ -1,0 +1,1 @@
+export const WEB_CHAT_SDK_PROTOCOL_VERSION = "1.0.0";

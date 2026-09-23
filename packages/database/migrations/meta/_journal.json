@@ -71,6 +71,13 @@
       "when": 1790115168341,
       "tag": "0009_damp_cyclops",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790176698788,
+      "tag": "0010_great_mephisto",
+      "breakpoints": true
     }
   ]
 }

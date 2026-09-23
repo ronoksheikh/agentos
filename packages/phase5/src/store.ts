@@ -1,5 +1,5 @@
 import { ulid } from "ulid";
-import { and, eq, gt, lte, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as dbs from "@agentos/database";
 import { responseTimingPolicySchema } from "@agentos/agents";
@@ -49,7 +49,7 @@ export class Phase5Store {
           if (priorMessage) { await tx.update(dbs.universalEvents).set({ state: "DUPLICATE", safeCode: "EXTERNAL_MESSAGE_DUPLICATE" }).where(eq(dbs.universalEvents.id, event.id)); continue; }
         }
         const conversation = (await tx.update(dbs.conversations).set({ latestInboundSequence: sql`${dbs.conversations.latestInboundSequence} + 1`, updatedAt: new Date() }).where(and(eq(dbs.conversations.id, event.conversationId), eq(dbs.conversations.businessId, event.businessId))).returning({ sequence: dbs.conversations.latestInboundSequence, activeBatchId: dbs.conversations.activeBatchId }))[0]!;
-        await tx.insert(dbs.messages).values({ id: event.payload.messageId, businessId: event.businessId, conversationId: event.conversationId, customerId: event.customerId ?? null, connectionId: event.connectionId, externalMessageId: event.source.externalMessageId ?? null, externalParentId: event.payload.replyToExternalId ?? event.source.externalParentId ?? null, senderKind: "CUSTOMER", text: event.payload.text ?? null, occurredAt: new Date(event.occurredAt), receivedAt: new Date(event.receivedAt), inboundSequence: conversation.sequence, traceId: event.traceId, rawEventSourceRef: raw.id, lifecycle: { attachmentIds: event.payload.attachmentIds } });
+        await tx.insert(dbs.messages).values({ id: event.payload.messageId, businessId: event.businessId, conversationId: event.conversationId, customerId: event.customerId ?? null, connectionId: event.connectionId, externalMessageId: event.source.externalMessageId ?? null, externalParentId: event.payload.replyToExternalId ?? event.source.externalParentId ?? null, senderKind: "CUSTOMER", text: event.payload.text ?? null, occurredAt: new Date(event.occurredAt), receivedAt: new Date(event.receivedAt), inboundSequence: conversation.sequence, traceId: event.traceId, rawEventSourceRef: raw.id, lifecycle: { attachmentIds: event.payload.attachmentIds, ...(event.payload.pageContext ? { pageContext: event.payload.pageContext } : {}) } });
         const now = new Date(event.receivedAt);
         const existing = conversation.activeBatchId ? (await tx.select().from(dbs.messageBatches).where(and(eq(dbs.messageBatches.id, conversation.activeBatchId), eq(dbs.messageBatches.businessId, event.businessId), eq(dbs.messageBatches.state, "BUFFERING"))).limit(1))[0] : undefined;
         if (existing) {
@@ -217,6 +217,12 @@ export class Phase5Store {
     const expired = await this.db.select({ id: dbs.rawInboundEvents.id }).from(dbs.rawInboundEvents).where(and(lte(dbs.rawInboundEvents.retentionUntil, new Date()), sql`${dbs.rawInboundEvents.state} <> 'PURGED'`)).limit(limit);
     if (!expired.length) return 0;
     for (const row of expired) await this.db.update(dbs.rawInboundEvents).set({ payloadSha256: "0".repeat(64), payloadBytes: 0, externalEventId: null, state: "PURGED", safeCode: "RETENTION_EXPIRED" }).where(eq(dbs.rawInboundEvents.id, row.id));
+    return expired.length;
+  }
+  async purgeExpiredWebChatRateBuckets(limit = 2_000) {
+    const expired = await this.db.select({ key: dbs.webChatRateBuckets.key }).from(dbs.webChatRateBuckets).where(lte(dbs.webChatRateBuckets.expiresAt, new Date())).limit(limit);
+    if (!expired.length) return 0;
+    await this.db.delete(dbs.webChatRateBuckets).where(inArray(dbs.webChatRateBuckets.key, expired.map((row) => row.key)));
     return expired.length;
   }
 }

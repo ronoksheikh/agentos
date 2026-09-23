@@ -14,6 +14,7 @@ import { ToolRegistry, type ToolExecutionContext } from "@agentos/tools";
 import { BrowserCoordinator, RemoteBrowserAdapter, createWebTools, type BrowserPolicy } from "@agentos/web";
 import { PinnedUrlReader } from "@agentos/web";
 import { createTrustedBusinessContext } from "@agentos/shared";
+import { PostgresWebChatService, WebChatAdapter } from "@agentos/website-sdk";
 import { ulid } from "ulid";
 import type { WorkerDependencies } from "./index";
 
@@ -29,6 +30,7 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
   const storage = new FileObjectStorage(required("PRIVATE_MEDIA_DIR"), required("PUBLIC_MEDIA_BASE_URL"), required("MEDIA_SIGNING_KEY"));
   const registry = new InMemoryChannelRegistry();
   registry.register(new FacebookMessengerAdapter(db, api, vault, required("META_APP_SECRET"), new PostgresMessengerAssetResolver(db, storage)));
+  registry.register(new WebChatAdapter(new PostgresWebChatService(db, required("VISITOR_SESSION_SECRET"))));
   const presence = new RegistryPresenceController(registry);
   const realtime = new PostgresRealtimeBus(db);
   const parser = new DefaultKnowledgeParser();
