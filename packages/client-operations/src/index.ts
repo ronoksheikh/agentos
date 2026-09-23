@@ -24,6 +24,7 @@ export class ClientDashboardService {
 }
 
 export const CLIENT_COUNTER_LINKS = {
-  unreadConversations: "/conversations?unread=true", unresolvedHandoffs: "/needs-attention?state=unresolved", failedRuns: "/agent-activity?status=failed", urgentIssues: "/needs-attention?priority=urgent",
+  unreadConversations: "/conversations?unread=true", unresolvedHandoffs: "/needs-attention?state=unresolved", failedRuns: "/agent-activity?status=failed", urgentIssues: "/conversations?priority=urgent",
 } as const;
 export type ClientSafeRecord = JsonValue;
+export { PostgresClientDashboard } from "./postgres";
