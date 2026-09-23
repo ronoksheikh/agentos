@@ -84,3 +84,10 @@ export function redactSafe(value: unknown, unsafeKeys: readonly string[] = []): 
 }
 
 export const nowIso = () => new Date().toISOString();
+
+export function businessAutomationAllowed(business: { state: "TRIAL" | "ACTIVE" | "PAUSED" | "EXPIRED" | "CANCELLED"; disabled: boolean; trialStartedAt?: Date | null; trialEndsAt?: Date | null; trialExpiryBehavior?: "PAUSE_AUTOMATION" | "CONTINUE_AUTOMATION" }, now = new Date()) {
+  if (business.disabled) return false;
+  if (business.state === "ACTIVE") return true;
+  if (business.state === "TRIAL") return Boolean(business.trialStartedAt && business.trialEndsAt && business.trialStartedAt <= now && business.trialEndsAt > now);
+  return business.state === "EXPIRED" && business.trialExpiryBehavior === "CONTINUE_AUTOMATION";
+}

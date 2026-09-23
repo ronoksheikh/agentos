@@ -11,6 +11,7 @@ export interface WorkerDependencies {
   realtime?: RealtimeBus; capabilities?: (businessId: string, agentId: string) => Promise<string[]>;
   attachment?: ConstructorParameters<typeof EventRouter>[1]; browser?: ConstructorParameters<typeof EventRouter>[2];
   comments?: ConstructorParameters<typeof EventRouter>[3];
+  trialSweep?: () => Promise<number>;
 }
 
 export async function startPhase5Worker(deps: WorkerDependencies) {
@@ -19,11 +20,13 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
   const router = new EventRouter(store, deps.attachment, deps.browser, deps.comments);
   const processor = new Phase5Processor({ store, runtime: deps.runtime, registry: deps.registry, presence: deps.presence, router, ...(deps.realtime ? { realtime: deps.realtime } : {}), ...(deps.capabilities ? { capabilities: deps.capabilities } : {}) });
   await queues.recover();
+  await deps.trialSweep?.();
   await store.scheduleDueGoals();
   const stopWorkers = queues.start((work, signal, lease) => processor.handle(work, signal, lease));
   await queues.pump();
   const reconciliationTimer = setInterval(() => { void store.db.select({ id: effectIntents.id, businessId: effectIntents.businessId }).from(effectIntents).where(eq(effectIntents.state, "UNKNOWN")).limit(50).then((effects) => Promise.all(effects.map((effect) => processor.reconcileUnknownEffect(effect.businessId, effect.id).catch(() => "UNKNOWN")))).catch(() => {}); }, 30_000);
-  return async () => { clearInterval(reconciliationTimer); await stopWorkers(); await queues.close(); };
+  const trialTimer = setInterval(() => { void deps.trialSweep?.().catch(() => {}); }, 60_000);
+  return async () => { clearInterval(reconciliationTimer); clearInterval(trialTimer); await stopWorkers(); await queues.close(); };
 }
 
 if (import.meta.main) {

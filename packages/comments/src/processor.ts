@@ -6,7 +6,7 @@ import type { MetaApi, PostgresCredentialVault } from "@agentos/channels";
 import { MetaApiError } from "@agentos/channels";
 import type { UniversalEvent } from "@agentos/events";
 import type { RealtimeBus } from "@agentos/realtime";
-import { createTrustedBusinessContext } from "@agentos/shared";
+import { businessAutomationAllowed, createTrustedBusinessContext } from "@agentos/shared";
 import { CommentPolicyEngine, RuleCommentClassifier, type CommentClassifier, type CommentDecision } from "./index";
 
 type CommentEvent = Extract<UniversalEvent, { type: "comment.created" }>;
@@ -83,14 +83,15 @@ export class PostgresCommentProcessor {
     const connection = (await this.db.select().from(dbs.channelConnections).where(and(eq(dbs.channelConnections.id, event.connectionId), eq(dbs.channelConnections.businessId, event.businessId), eq(dbs.channelConnections.channel, "facebook_messenger"))).limit(1))[0];
     if (!connection) throw new Error("COMMENT_CONNECTION_NOT_FOUND");
     const loaded = await this.load(event, connection); const comment = await this.persist(event, connection, loaded);
-    const [policy, flag, conversation] = await Promise.all([
+    const [policy, flag, conversation, business] = await Promise.all([
       this.db.select().from(dbs.commentPolicies).where(and(eq(dbs.commentPolicies.businessId, event.businessId), eq(dbs.commentPolicies.connectionId, connection.id))).limit(1),
       this.db.select({ enabled: dbs.featureFlags.enabled }).from(dbs.featureFlags).where(and(eq(dbs.featureFlags.businessId, event.businessId), eq(dbs.featureFlags.key, "comment_ai"))).limit(1),
       comment.conversationId ? this.db.select({ ownership: dbs.conversations.ownership }).from(dbs.conversations).where(and(eq(dbs.conversations.id, comment.conversationId), eq(dbs.conversations.businessId, event.businessId))).limit(1) : Promise.resolve([]),
+      this.db.select({ state: dbs.businesses.state, disabled: dbs.businesses.disabled, trialStartedAt: dbs.businesses.trialStartedAt, trialEndsAt: dbs.businesses.trialEndsAt, trialExpiryBehavior: dbs.businesses.trialExpiryBehavior }).from(dbs.businesses).where(eq(dbs.businesses.id, event.businessId)).limit(1),
     ]);
     const configured = policy[0]; const capabilities = connection.capabilities && typeof connection.capabilities === "object" && !Array.isArray(connection.capabilities) ? connection.capabilities as Record<string, unknown> : {};
     const classification = await this.classifier.classify({ text: loaded.text, postText: loaded.postText, signal });
-    const decided = this.policy.evaluate(classification, { enabled: configured?.enabled ?? false, autoReply: configured?.autoReply ?? false, autoHide: configured?.autoHide ?? false, allowDelete: configured?.allowDelete ?? false, minimumConfidence: configured?.minimumConfidence ?? 0.85, featureEnabled: flag[0]?.enabled ?? false, channelConnected: connection.state === "CONNECTED" && !connection.paused, verifiedRead: capabilities.commentReadVerified === true, verifiedReply: capabilities.commentReplyVerified === true, verifiedHide: capabilities.commentHideVerified === true, commentCanReply: loaded.canComment, commentCanHide: loaded.canHide, commentHidden: loaded.isHidden, postScopeVerified: loaded.postScopeVerified, verifiedExternalAuthor: Boolean(loaded.authorId && loaded.authorId !== connection.externalPageId), ...(conversation[0] ? { ownership: conversation[0].ownership } : {}) });
+    const decided = this.policy.evaluate(classification, { enabled: configured?.enabled ?? false, autoReply: configured?.autoReply ?? false, autoHide: configured?.autoHide ?? false, allowDelete: configured?.allowDelete ?? false, minimumConfidence: configured?.minimumConfidence ?? 0.85, featureEnabled: flag[0]?.enabled ?? false, businessEligible: Boolean(business[0] && businessAutomationAllowed(business[0])), channelConnected: connection.state === "CONNECTED" && !connection.paused, verifiedRead: capabilities.commentReadVerified === true, verifiedReply: capabilities.commentReplyVerified === true, verifiedHide: capabilities.commentHideVerified === true, commentCanReply: loaded.canComment, commentCanHide: loaded.canHide, commentHidden: loaded.isHidden, postScopeVerified: loaded.postScopeVerified, verifiedExternalAuthor: Boolean(loaded.authorId && loaded.authorId !== connection.externalPageId), ...(conversation[0] ? { ownership: conversation[0].ownership } : {}) });
     const key = `comment:${connection.id}:${comment.externalCommentId}:policy:${configured?.version ?? 1}`;
     const id = ulid(); const inserted = await this.db.insert(dbs.commentDecisions).values({ id, businessId: event.businessId, commentId: comment.id, sourceEventId: event.id, classification, policyVersion: configured?.version ?? 1, outcome: decided.outcome, safeReason: loaded.readCode !== "VERIFIED" ? loaded.readCode : decided.safeReason, actionStatus: "PENDING", idempotencyKey: key, actorId: "comment-processor" }).onConflictDoNothing().returning({ id: dbs.commentDecisions.id });
     const decisionId = inserted[0]?.id ?? (await this.db.select({ id: dbs.commentDecisions.id }).from(dbs.commentDecisions).where(and(eq(dbs.commentDecisions.businessId, event.businessId), eq(dbs.commentDecisions.idempotencyKey, key))).limit(1))[0]?.id;

@@ -73,6 +73,11 @@ try {
   await db.update(schema.conversations).set({ ownership: "HUMAN_ACTIVE" }).where(eq(schema.conversations.id, first.conversationId));
   assert.equal((await adapter.health(outboundContext)).status, "UNAVAILABLE");
   await assert.rejects(() => adapter.execute(outboundContext, { ...action, id: ulid(), idempotencyKey: "after-handoff" }), /CHANNEL_DISCONNECTED/);
+  await db.update(schema.businesses).set({ state: "TRIAL", trialStartedAt: new Date(Date.now() - 35 * 86400_000), trialEndsAt: new Date(Date.now() - 86400_000) }).where(eq(schema.businesses.id, ids.businessA));
+  await assert.rejects(() => service.bootstrap({ publicKey: site.publicKey, origin, sdkVersion: "1.0.0" }), /SITE_NOT_ALLOWED/);
+  await assert.rejects(() => service.authenticate(boot.sessionToken, origin), /VISITOR_SESSION_INVALID/);
+  await db.update(schema.businesses).set({ state: "EXPIRED", trialExpiryBehavior: "CONTINUE_AUTOMATION" }).where(eq(schema.businesses.id, ids.businessA));
+  assert.equal((await service.authenticate(boot.sessionToken, origin)).sessionId, session.sessionId);
   await service.revoke(boot.sessionToken, origin); await assert.rejects(() => service.poll(boot.sessionToken, origin), /VISITOR_SESSION_INVALID/);
   await service.setSiteEnabled(actor, site.id, false);
   assert.equal(PRODUCTION_WEB_CHAT_CHANNEL, "web_chat");

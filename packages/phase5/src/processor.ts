@@ -8,7 +8,7 @@ import { universalChannelActionSchema, type UniversalChannelAction } from "@agen
 import type { ChannelAdapter, ChannelRegistry, PresenceController } from "@agentos/channels";
 import { rawEventRecordSchema, toRuntimeEvent, universalEventSchema, type UniversalEvent } from "@agentos/events";
 import type { RealtimeBus } from "@agentos/realtime";
-import { createTrustedBusinessContext, type TrustedBusinessContext } from "@agentos/shared";
+import { businessAutomationAllowed, createTrustedBusinessContext, type TrustedBusinessContext } from "@agentos/shared";
 import { evaluateResponseTiming } from "./contracts";
 import type { RedisConversationLease } from "./queue";
 import { Phase5Store } from "./store";
@@ -73,7 +73,7 @@ export class Phase5Processor {
   }
   private async eligible(context: TrustedBusinessContext, channel: string) {
     const current = await this.deps.store.latestSequence(context.businessId, context.conversationId!);
-    if (current.disabled || !["ACTIVE", "TRIAL"].includes(current.businessState) || current.ownership !== "AI_ACTIVE" || !current.activeVersionId) return false;
+    if (!businessAutomationAllowed({ state: current.businessState, disabled: current.disabled, trialStartedAt: current.trialStartedAt, trialEndsAt: current.trialEndsAt, trialExpiryBehavior: current.trialExpiryBehavior }) || current.ownership !== "AI_ACTIVE" || !current.activeVersionId) return false;
     const adapter = this.deps.registry.resolve(channel);
     return Boolean(adapter && (await adapter.health(context)).status !== "UNAVAILABLE");
   }

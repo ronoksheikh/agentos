@@ -4,7 +4,7 @@ import { flattenMetaFeedChanges } from "@agentos/channels";
 
 describe("Phase 7 comment classification and policy", () => {
   const classifier = new RuleCommentClassifier(); const policy = new CommentPolicyEngine();
-  const ready = { enabled: true, autoReply: true, autoHide: true, allowDelete: true, minimumConfidence: 0.8, featureEnabled: true, channelConnected: true, verifiedRead: true, verifiedReply: true, verifiedHide: true, commentCanReply: true, commentCanHide: true, commentHidden: false, postScopeVerified: true, verifiedExternalAuthor: true, ownership: "AI_ACTIVE" as const };
+  const ready = { enabled: true, autoReply: true, autoHide: true, allowDelete: true, minimumConfidence: 0.8, featureEnabled: true, businessEligible: true, channelConnected: true, verifiedRead: true, verifiedReply: true, verifiedHide: true, commentCanReply: true, commentCanHide: true, commentHidden: false, postScopeVerified: true, verifiedExternalAuthor: true, ownership: "AI_ACTIVE" as const };
   test("classifies typed safe signals and never authorizes deletion", async () => {
     const price = await classifier.classify({ text: "What is the price?" });
     expect(price.category).toBe("price_question"); expect(policy.evaluate(price, ready).outcome).toBe("REPLY");
@@ -13,6 +13,7 @@ describe("Phase 7 comment classification and policy", () => {
     expect(JSON.stringify(scam.signals)).not.toContain("password");
     expect(policy.evaluate(scam, { ...ready, verifiedHide: false }).outcome).toBe("HANDOFF");
     expect(policy.evaluate(price, { ...ready, enabled: false }).outcome).toBe("KEEP");
+    expect(policy.evaluate(price, { ...ready, businessEligible: false }).outcome).toBe("KEEP");
     expect(policy.evaluate(price, { ...ready, ownership: "HUMAN_ACTIVE" }).outcome).toBe("HANDOFF");
     expect(policy.evaluate(price, { ...ready, postScopeVerified: false }).outcome).toBe("KEEP");
     expect(policy.evaluate(price, { ...ready, verifiedExternalAuthor: false })).toEqual({ outcome: "KEEP", reviewRequired: true, safeReason: "COMMENT_AUTHOR_UNVERIFIED" });

@@ -6,10 +6,12 @@ import { ulid } from "ulid";
 import { agencyCapabilities, agencyRoleSchema } from "@agentos/auth";
 import { businesses } from "@agentos/database";
 import { PostgresPhase4Operations } from "@agentos/phase4-operations";
+import { PostgresTrialService } from "@agentos/trial";
 import { createTrustedBusinessContext, ulidSchema } from "@agentos/shared";
 import { database, requireAgencyPage } from "../../../lib/server";
 
 const operations = new PostgresPhase4Operations(database);
+const trial = new PostgresTrialService(database);
 async function context(businessId: string, capability: string) { ulidSchema.parse(businessId); const access = await requireAgencyPage(capability); const business = (await database.select({ id: businesses.id }).from(businesses).where(eq(businesses.id, businessId)).limit(1))[0]; if (!business) throw new Error("BUSINESS_NOT_FOUND"); return createTrustedBusinessContext({ businessId, principal: { kind: "user", userId: access.session.user.id, sessionId: access.session.session.id }, source: "authenticated_request", traceId: ulid(), capabilityGrants: agencyCapabilities(agencyRoleSchema.parse(access.membership.role), access.membership.capabilities) }); }
 const value = (form: FormData, name: string) => String(form.get(name) ?? "");
 const destination = (id: string, tab: string, result: string) => `/businesses/${id}?phase4=${result}#${tab}`;
@@ -19,3 +21,14 @@ export async function replaceKnowledgeAction(form: FormData) { const id = value(
 export async function toggleKnowledgeAction(form: FormData) { const id = value(form, "businessId"); try { const trusted = await context(id, "knowledge.manage"); await operations.setKnowledgeEnabled(trusted, value(form, "sourceId"), value(form, "enabled") === "true"); revalidatePath(`/businesses/${id}`); } catch { redirect(destination(id, "knowledge", "knowledge-error")); } redirect(destination(id, "knowledge", "knowledge-updated")); }
 export async function deleteKnowledgeAction(form: FormData) { const id = value(form, "businessId"); try { const trusted = await context(id, "knowledge.manage"); await operations.deleteKnowledge(trusted, value(form, "sourceId")); revalidatePath(`/businesses/${id}`); } catch { redirect(destination(id, "knowledge", "knowledge-error")); } redirect(destination(id, "knowledge", "knowledge-deleted")); }
 export async function saveCustomToolAction(form: FormData) { const id = value(form, "businessId"); try { const trusted = await context(id, "custom_tool.manage"); const config = { name: value(form, "name"), description: value(form, "description"), type: value(form, "type"), method: value(form, "method"), baseUrl: value(form, "baseUrl"), pathTemplate: value(form, "pathTemplate"), inputSchema: JSON.parse(value(form, "inputSchema")), outputSchema: JSON.parse(value(form, "outputSchema")), outputMapping: JSON.parse(value(form, "outputMapping")), timeoutMs: Number(value(form, "timeoutMs")), allowedHosts: value(form, "allowedHosts").split(",").map((host) => host.trim()).filter(Boolean), safeHeaders: {}, credentialRef: value(form, "credentialRef") || null, requiredCapabilities: value(form, "requiredCapabilities").split(",").map((grant) => grant.trim()).filter(Boolean), allowedAgentIds: value(form, "allowedAgentIds").split(",").map((agent) => agent.trim()).filter(Boolean), safetyClass: value(form, "safetyClass"), enabled: value(form, "enabled") === "on", maxRequestBytes: 16384, maxResponseBytes: 65536 }; await operations.saveCustomTool(trusted, config); revalidatePath(`/businesses/${id}`); } catch { redirect(destination(id, "tools", "tool-error")); } redirect(destination(id, "tools", "tool-created")); }
+
+async function trialAction(form: FormData, operation: (trusted: Awaited<ReturnType<typeof context>>) => Promise<unknown>, success: string) {
+  const id = value(form, "businessId"); let status = success;
+  try { await operation(await context(id, "business.manage")); revalidatePath(`/businesses/${id}`); }
+  catch (error) { status = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message.toLowerCase().replaceAll("_", "-") : "trial-operation-failed"; }
+  redirect(`/businesses/${id}?phase7=${status}#trial`);
+}
+export async function activateTrialAction(form: FormData) { await trialAction(form, (trusted) => trial.activate(trusted), "trial-activated"); }
+export async function extendTrialAction(form: FormData) { await trialAction(form, (trusted) => trial.extend(trusted, new Date(value(form, "endsAt"))), "trial-extended"); }
+export async function setTrialExpiryBehaviorAction(form: FormData) { await trialAction(form, (trusted) => trial.setExpiryBehavior(trusted, value(form, "behavior") as "PAUSE_AUTOMATION" | "CONTINUE_AUTOMATION"), "expiry-behavior-updated"); }
+export async function overrideTrialStateAction(form: FormData) { await trialAction(form, (trusted) => trial.overrideState(trusted, value(form, "state") as "ACTIVE" | "PAUSED" | "CANCELLED"), "service-state-updated"); }

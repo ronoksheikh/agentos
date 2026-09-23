@@ -7,7 +7,7 @@ import type { UniversalChannelAction } from "@agentos/actions";
 import type { ChannelAdapter, ChannelCapabilities, PresenceOperation } from "@agentos/channels";
 import * as dbs from "@agentos/database";
 import { toRuntimeEvent, universalEventSchema, type AgentEvent, type UniversalEvent } from "@agentos/events";
-import type { TrustedBusinessContext } from "@agentos/shared";
+import { businessAutomationAllowed, type TrustedBusinessContext } from "@agentos/shared";
 import { pageContextSchema, parseVisitorSession, sdkVersionSchema, signVisitorSession, WEB_CHAT_SDK_PROTOCOL_VERSION, type VerifiedVisitorSession } from "./contracts";
 
 export const PRODUCTION_WEB_CHAT_CHANNEL = "web_chat";
@@ -59,7 +59,7 @@ export class PostgresWebChatService {
   async bootstrap(input: { publicKey: string; origin: string; sdkVersion: string; visitorId?: string }) {
     sdkVersionSchema.parse(input.sdkVersion); if (input.visitorId) visitorIdSchema.parse(input.visitorId);
     const row = (await this.db.select({ site: dbs.websiteSites, connection: dbs.channelConnections, business: dbs.businesses }).from(dbs.websiteSites).innerJoin(dbs.channelConnections, eq(dbs.channelConnections.id, dbs.websiteSites.id)).innerJoin(dbs.businesses, eq(dbs.businesses.id, dbs.websiteSites.businessId)).where(eq(dbs.websiteSites.publicKey, input.publicKey)).limit(1))[0];
-    if (!row || !row.site.enabled || row.connection.channel !== PRODUCTION_WEB_CHAT_CHANNEL || row.connection.state !== "CONNECTED" || row.connection.paused || row.business.disabled || !["TRIAL", "ACTIVE"].includes(row.business.state) || !row.site.allowedOrigins.includes(input.origin)) throw new Error("SITE_NOT_ALLOWED");
+    if (!row || !row.site.enabled || row.connection.channel !== PRODUCTION_WEB_CHAT_CHANNEL || row.connection.state !== "CONNECTED" || row.connection.paused || !businessAutomationAllowed(row.business, this.now()) || !row.site.allowedOrigins.includes(input.origin)) throw new Error("SITE_NOT_ALLOWED");
     await this.consume(`bootstrap:${row.site.id}:${input.origin}`, Math.max(600, row.site.requestsPerMinute * 10));
     const visitorId = input.visitorId ?? ulid(); const visitorIdHash = this.hash(`${row.site.id}:${input.origin}:${visitorId}`); const expiresAt = new Date(this.now().getTime() + 15 * 60_000); const freshId = ulid();
     const sessions = await this.db.insert(dbs.visitorSessions).values({ id: freshId, businessId: row.site.businessId, siteId: row.site.id, visitorIdHash, origin: input.origin, expiresAt }).onConflictDoUpdate({ target: [dbs.visitorSessions.businessId, dbs.visitorSessions.siteId, dbs.visitorSessions.visitorIdHash], set: { expiresAt, updatedAt: this.now() }, setWhere: isNull(dbs.visitorSessions.revokedAt) }).returning({ id: dbs.visitorSessions.id });
@@ -70,7 +70,7 @@ export class PostgresWebChatService {
   async authenticate(token: string, origin: string, rate = false) {
     const session = parseVisitorSession(token, this.secret); const current = this.now();
     const row = (await this.db.select({ session: dbs.visitorSessions, site: dbs.websiteSites, connection: dbs.channelConnections, business: dbs.businesses }).from(dbs.visitorSessions).innerJoin(dbs.websiteSites, eq(dbs.websiteSites.id, dbs.visitorSessions.siteId)).innerJoin(dbs.channelConnections, eq(dbs.channelConnections.id, dbs.websiteSites.id)).innerJoin(dbs.businesses, eq(dbs.businesses.id, dbs.websiteSites.businessId)).where(and(eq(dbs.visitorSessions.id, session.sessionId), eq(dbs.visitorSessions.businessId, session.businessId))).limit(1))[0];
-    if (!row || row.session.revokedAt || row.session.expiresAt <= current || session.expiresAt <= current.toISOString() || row.session.origin !== origin || session.origin !== origin || row.session.visitorIdHash !== this.hash(`${session.siteId}:${origin}:${session.visitorId}`) || row.session.siteId !== session.siteId || row.site.businessId !== session.businessId || row.site.agentId !== session.agentId || !row.site.enabled || !row.site.allowedOrigins.includes(origin) || row.connection.businessId !== session.businessId || row.connection.channel !== PRODUCTION_WEB_CHAT_CHANNEL || row.connection.state !== "CONNECTED" || row.connection.paused || row.business.disabled || !["TRIAL", "ACTIVE"].includes(row.business.state)) throw new Error("VISITOR_SESSION_INVALID");
+    if (!row || row.session.revokedAt || row.session.expiresAt <= current || session.expiresAt <= current.toISOString() || row.session.origin !== origin || session.origin !== origin || row.session.visitorIdHash !== this.hash(`${session.siteId}:${origin}:${session.visitorId}`) || row.session.siteId !== session.siteId || row.site.agentId !== session.agentId || !row.site.enabled || !row.site.allowedOrigins.includes(origin) || row.connection.businessId !== session.businessId || row.connection.channel !== PRODUCTION_WEB_CHAT_CHANNEL || row.connection.state !== "CONNECTED" || row.connection.paused || !businessAutomationAllowed(row.business, current)) throw new Error("VISITOR_SESSION_INVALID");
     if (rate) await this.consume(`session:${session.siteId}:${session.sessionId}`, row.site.requestsPerMinute);
     return { ...session, customerId: row.session.customerId, conversationId: row.session.conversationId };
   }

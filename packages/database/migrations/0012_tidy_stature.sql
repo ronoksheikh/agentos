@@ -1,0 +1,2 @@
+CREATE TYPE "public"."trial_expiry_behavior" AS ENUM('PAUSE_AUTOMATION', 'CONTINUE_AUTOMATION');--> statement-breakpoint
+ALTER TABLE "businesses" ADD COLUMN "trial_expiry_behavior" "trial_expiry_behavior" DEFAULT 'PAUSE_AUTOMATION' NOT NULL;

@@ -16,6 +16,7 @@ import { BrowserCoordinator, RemoteBrowserAdapter, createWebTools, type BrowserP
 import { PinnedUrlReader } from "@agentos/web";
 import { createTrustedBusinessContext } from "@agentos/shared";
 import { PostgresWebChatService, WebChatAdapter } from "@agentos/website-sdk";
+import { PostgresTrialService } from "@agentos/trial";
 import { ulid } from "ulid";
 import type { WorkerDependencies } from "./index";
 
@@ -66,5 +67,5 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
     traces: new PostgresRuntimeTraceRepository(db), realtime, presence,
   });
   const commentProcessor = new PostgresCommentProcessor(db, api, vault, realtime, new RuleCommentClassifier(), new PostgresCommentWriteExecutor(db, runtime, registry));
-  return { db, redisUrl, runtime, registry, presence, realtime, attachment, comments: (event, signal) => commentProcessor.process(event, signal).then(() => {}), capabilities: async () => ["conversation.read", "handoff.request", ...(browserUrl ? ["browser.use"] : [])] };
+  return { db, redisUrl, runtime, registry, presence, realtime, attachment, comments: (event, signal) => commentProcessor.process(event, signal).then(() => {}), trialSweep: () => new PostgresTrialService(db).expireDue(), capabilities: async () => ["conversation.read", "handoff.request", ...(browserUrl ? ["browser.use"] : [])] };
 }

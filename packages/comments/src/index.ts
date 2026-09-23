@@ -32,7 +32,7 @@ export class RuleCommentClassifier implements CommentClassifier {
 
 export const commentPolicyInputSchema = z.object({
   enabled: z.boolean(), autoReply: z.boolean(), autoHide: z.boolean(), allowDelete: z.boolean(), minimumConfidence: z.number().min(0).max(1),
-  featureEnabled: z.boolean(), channelConnected: z.boolean(), verifiedRead: z.boolean(), verifiedReply: z.boolean(), verifiedHide: z.boolean(),
+  featureEnabled: z.boolean(), businessEligible: z.boolean(), channelConnected: z.boolean(), verifiedRead: z.boolean(), verifiedReply: z.boolean(), verifiedHide: z.boolean(),
   commentCanReply: z.boolean(), commentCanHide: z.boolean(), commentHidden: z.boolean(), postScopeVerified: z.boolean(), verifiedExternalAuthor: z.boolean(),
   ownership: z.enum(["AI_ACTIVE", "HANDOFF_REQUESTED", "HUMAN_ACTIVE", "PAUSED", "RESOLVED"]).optional(),
 });
@@ -45,6 +45,7 @@ export class CommentPolicyEngine {
   evaluate(classification: CommentClassification, unsafeInput: CommentPolicyInput): CommentDecision {
     const input = commentPolicyInputSchema.parse(unsafeInput); const result = (outcome: CommentDecision["outcome"], reviewRequired: boolean, safeReason: string) => commentDecisionSchema.parse({ outcome, reviewRequired, safeReason });
     if (!input.enabled || !input.featureEnabled) return result("KEEP", false, "COMMENT_AUTOMATION_DISABLED");
+    if (!input.businessEligible) return result("KEEP", true, "BUSINESS_SERVICE_INACTIVE");
     if (!input.channelConnected || !input.verifiedRead || !input.postScopeVerified) return result("KEEP", true, "COMMENT_SCOPE_UNVERIFIED");
     if (!input.verifiedExternalAuthor) return result("KEEP", true, "COMMENT_AUTHOR_UNVERIFIED");
     if (classification.category === "uncertain" || classification.confidence < input.minimumConfidence) return result("KEEP", true, "CLASSIFICATION_REVIEW");
