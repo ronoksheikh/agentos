@@ -3,7 +3,7 @@ import { and, eq, lte } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ulid } from "ulid";
 import { z } from "zod";
-import { attachments, channelConnections, conversations, messages, messengerSends, messengerThreads, rawInboundEvents } from "@agentos/database";
+import { attachments, channelConnections, commentDecisions, conversations, facebookComments, messages, messengerSends, messengerThreads, rawInboundEvents } from "@agentos/database";
 import { toRuntimeEvent, universalEventSchema, type UniversalEvent, type AgentEvent } from "@agentos/events";
 import type { UniversalChannelAction } from "@agentos/actions";
 import type { ChannelAdapter, ChannelCapabilities, PresenceOperation } from "../index";
@@ -17,9 +17,11 @@ const attachmentInput = z.object({ type: z.string().max(30), payload: z.object({
 const messageInput = z.object({ mid: z.string().min(1).max(300).optional(), text: z.string().max(100_000).optional(), is_echo: z.boolean().optional(), reply_to: z.object({ mid: z.string().max(300) }).optional(), attachments: z.array(attachmentInput).max(20).optional() }).passthrough();
 const messagingInput = z.object({ sender: identity, recipient: identity, timestamp: z.number().int().positive(), message: messageInput.optional(), delivery: z.object({ mids: z.array(z.string()).max(100).optional(), watermark: z.number().int().optional() }).optional(), read: z.object({ watermark: z.number().int().positive() }).optional(), reaction: z.object({ mid: z.string(), emoji: z.string().optional(), action: z.string().optional() }).optional() }).passthrough();
 const envelopeSchema = z.object({ object: z.literal("page"), entry: z.array(z.object({ id: z.string().min(1).max(200), messaging: z.array(messagingInput).max(100).default([]) }).passthrough()).max(100) });
+const feedChangeSchema = z.object({ field: z.string(), value: z.object({ item: z.string().optional(), verb: z.string().optional(), comment_id: z.string().min(1).max(300).optional(), post_id: z.string().min(1).max(300).optional(), parent_id: z.string().min(1).max(300).optional() }).passthrough() });
 export type MetaNotification = z.infer<typeof messagingInput>;
 export function parseMetaEnvelope(body: Uint8Array) { if (body.byteLength > 1_000_000) throw new Error("META_BODY_TOO_LARGE"); return envelopeSchema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body))); }
 export function flattenMetaNotifications(body: Uint8Array) { return parseMetaEnvelope(body).entry.flatMap((entry) => entry.messaging.map((notification) => ({ pageId: entry.id, notification }))); }
+export function flattenMetaFeedChanges(body: Uint8Array) { return parseMetaEnvelope(body).entry.flatMap((entry) => z.array(feedChangeSchema).max(100).parse((entry as typeof entry & { changes?: unknown }).changes ?? []).filter((change) => change.field === "feed" && change.value.item === "comment" && change.value.verb === "add" && change.value.comment_id).map((change) => ({ pageId: entry.id, commentId: change.value.comment_id!, postId: change.value.post_id, parentId: change.value.parent_id }))); }
 export function verifyMetaSignature(body: Uint8Array, signature: string | null, appSecret: string) {
   if (!signature || !/^sha256=[a-f0-9]{64}$/i.test(signature) || !appSecret) return false;
   const expected = createHmac("sha256", appSecret).update(body).digest();
@@ -50,6 +52,16 @@ export class FacebookMessengerAdapter implements ChannelAdapter {
   async verifyInbound(request: { headers: Headers; body: Uint8Array }) { return { verified: verifyMetaSignature(request.body, request.headers.get("x-hub-signature-256"), this.appSecret), safeReason: "META_SIGNATURE_INVALID" }; }
   async normalizeInbound(request: { headers: Headers; body: Uint8Array }, context: TrustedBusinessContext): Promise<AgentEvent[]> { return (await this.normalizeUniversalInbound(request, context)).filter((event) => event.type === "message.received").map((event) => toRuntimeEvent(event, 1)); }
   async normalizeUniversalInbound(request: { headers: Headers; body: Uint8Array }, context: TrustedBusinessContext): Promise<UniversalEvent[]> {
+    if (request.headers.has("x-agentos-feed-index")) {
+      const changes = flattenMetaFeedChanges(request.body); const index = Number(request.headers.get("x-agentos-feed-index"));
+      if (!Number.isSafeInteger(index) || index < 0 || index >= changes.length) throw new Error("META_EVENT_INDEX_INVALID");
+      const change = changes[index]!; const connectionId = context.principal.kind === "adapter" ? context.principal.connectionId : null;
+      if (!connectionId || context.source !== "verified_adapter") throw new Error("META_SCOPE_DENIED");
+      const connection = (await this.db.select({ id: channelConnections.id }).from(channelConnections).where(and(eq(channelConnections.id, connectionId), eq(channelConnections.businessId, context.businessId), eq(channelConnections.externalPageId, change.pageId), eq(channelConnections.channel, FACEBOOK_MESSENGER))).limit(1))[0];
+      if (!connection) throw new Error("META_SCOPE_DENIED");
+      const now = new Date().toISOString();
+      return [universalEventSchema.parse({ id: ulid(), schemaVersion: "1.0", type: "comment.created", businessId: context.businessId, channel: FACEBOOK_MESSENGER, connectionId, dedupeKey: `meta:comment:${change.commentId}:add`, occurredAt: now, receivedAt: now, traceId: context.traceId, rawEventId: ulid(), source: { kind: "adapter", externalEventId: change.commentId }, payload: { externalCommentId: change.commentId, ...(change.postId ? { externalPostId: change.postId } : {}), ...(change.parentId ? { externalParentId: change.parentId } : {}) } })];
+    }
     const { pageId, notification } = selected(request);
     const connectionId = context.principal.kind === "adapter" ? context.principal.connectionId : null;
     if (!connectionId || context.source !== "verified_adapter") throw new Error("META_SCOPE_DENIED");
@@ -94,15 +106,55 @@ export class FacebookMessengerAdapter implements ChannelAdapter {
     if (live && (row.connection.state !== "CONNECTED" || row.connection.paused || row.ownership !== "AI_ACTIVE")) throw new Error("CHANNEL_DISCONNECTED");
     return row;
   }
-  async capabilities(context: TrustedBusinessContext) { const row = await this.target(context, false); return row.connection.state === "CONNECTED" && !row.connection.paused ? capabilities : { ...capabilities, canSendText: false, canSendImage: false, canMarkSeen: false, canShowTyping: false }; }
+  async capabilities(context: TrustedBusinessContext) { if (context.principal.kind === "system" && context.principal.service === "comment-processor") return { ...capabilities, canSendText: false, canSendImage: false, canMarkSeen: false, canShowTyping: false, canReplyToComment: true }; const row = await this.target(context, false); return row.connection.state === "CONNECTED" && !row.connection.paused ? capabilities : { ...capabilities, canSendText: false, canSendImage: false, canMarkSeen: false, canShowTyping: false }; }
   async health(context: TrustedBusinessContext) { try { await this.target(context); return { status: "HEALTHY" as const, checkedAt: new Date().toISOString() }; } catch { return { status: "UNAVAILABLE" as const, checkedAt: new Date().toISOString(), safeMessage: "Messenger Page is not ready" }; } }
   async presence(context: TrustedBusinessContext, operation: PresenceOperation) {
+    if (context.principal.kind === "system" && context.principal.service === "comment-processor") return { status: "SKIPPED" as const, safeReason: "COMMENT_HAS_NO_MESSENGER_PRESENCE" };
     const row = await this.target(context, operation !== "TYPING_OFF"); if (!row.connection.credentialRefId) return { status: "SKIPPED" as const, safeReason: "CREDENTIAL_UNAVAILABLE" };
     const sender_action = operation === "MARK_SEEN" ? "mark_seen" : operation === "TYPING_OFF" ? "typing_off" : "typing_on";
     await this.api.send(row.connection.externalPageId, await this.vault.resolve(context, row.connection.credentialRefId, "meta_page_token"), { recipient: { id: row.thread.senderId }, sender_action });
     return { status: "EXECUTED" as const };
   }
+  private async commentTarget(context: TrustedBusinessContext, commentId: string, decisionKey: string, outcome: "REPLY" | "HIDE") {
+    if (context.principal.kind !== "system" || context.principal.service !== "comment-processor" || !context.capabilityGrants.includes(outcome === "REPLY" ? "comment.reply" : "comment.hide")) throw new Error("COMMENT_ACTION_DENIED");
+    const row = (await this.db.select({ comment: facebookComments, connection: channelConnections, decision: commentDecisions, ownership: conversations.ownership }).from(commentDecisions).innerJoin(facebookComments, eq(facebookComments.id, commentDecisions.commentId)).innerJoin(channelConnections, eq(channelConnections.id, facebookComments.connectionId)).innerJoin(conversations, eq(conversations.id, facebookComments.conversationId)).where(and(eq(commentDecisions.businessId, context.businessId), eq(commentDecisions.commentId, commentId), eq(commentDecisions.idempotencyKey, decisionKey), eq(commentDecisions.outcome, outcome), eq(facebookComments.businessId, context.businessId), eq(channelConnections.businessId, context.businessId), eq(channelConnections.channel, FACEBOOK_MESSENGER), eq(conversations.businessId, context.businessId), eq(conversations.id, context.conversationId!))).limit(1))[0];
+    if (!row || row.connection.agentId !== context.agentId || row.connection.state !== "CONNECTED" || row.connection.paused || row.ownership !== "AI_ACTIVE" || !row.connection.credentialRefId) throw new Error("COMMENT_ACTION_DENIED");
+    const caps = row.connection.capabilities && typeof row.connection.capabilities === "object" && !Array.isArray(row.connection.capabilities) ? row.connection.capabilities as Record<string, unknown> : {};
+    if (!row.connection.grantedScopes.includes("pages_manage_engagement") || caps.commentReadVerified !== true || caps[outcome === "REPLY" ? "commentReplyVerified" : "commentHideVerified"] !== true || !(outcome === "REPLY" ? row.comment.canComment : row.comment.canHide) || row.decision.safeReason !== (outcome === "REPLY" ? "APPROVED_COMMENT_REPLY" : "HIGH_CONFIDENCE_SPAM")) throw new Error("COMMENT_CAPABILITY_UNVERIFIED");
+    return row;
+  }
+  private async claimComment(decisionId: string, businessId: string) { return (await this.db.update(commentDecisions).set({ actionStatus: "EXECUTING", updatedAt: new Date() }).where(and(eq(commentDecisions.id, decisionId), eq(commentDecisions.businessId, businessId), eq(commentDecisions.actionStatus, "PENDING"))).returning({ id: commentDecisions.id }))[0]; }
+  private async commentFailure(decisionId: string, businessId: string, error: unknown) {
+    const code = error instanceof MetaApiError ? error.safeCode : "EXTERNAL_OUTCOME_UNKNOWN";
+    const definite = error instanceof MetaApiError && ["META_AUTH", "META_PERMISSION", "META_RATE_LIMIT", "META_REJECTED"].includes(error.safeCode);
+    await this.db.update(commentDecisions).set({ actionStatus: definite ? "FAILED" : "UNKNOWN", safeReason: code, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(commentDecisions.id, decisionId), eq(commentDecisions.businessId, businessId)));
+    return { status: "SKIPPED" as const, safeReason: code };
+  }
+  private async executeCommentReply(context: TrustedBusinessContext, action: Extract<UniversalChannelAction, { type: "ReplyToComment" }>) {
+    const row = await this.commentTarget(context, action.commentId, action.idempotencyKey, "REPLY");
+    if (row.decision.actionStatus === "COMPLETED") return { status: "EXECUTED" as const, ...(row.decision.externalActionId ? { externalId: row.decision.externalActionId } : {}) };
+    if (!this.api.replyComment || !await this.claimComment(row.decision.id, context.businessId)) return { status: "SKIPPED" as const, safeReason: "COMMENT_RECONCILIATION_REQUIRED" };
+    try {
+      const token = await this.vault.resolve(context, row.connection.credentialRefId!, "meta_page_token");
+      const sent = await this.api.replyComment(row.comment.externalCommentId, token, action.text);
+      await this.db.update(commentDecisions).set({ actionStatus: "COMPLETED", externalActionId: sent.id, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(commentDecisions.id, row.decision.id), eq(commentDecisions.businessId, context.businessId)));
+      await this.db.insert(messages).values({ id: ulid(), businessId: context.businessId, conversationId: row.comment.conversationId!, customerId: row.comment.customerId, connectionId: row.connection.id, externalMessageId: sent.id, externalParentId: row.comment.externalCommentId, senderKind: "AGENT", text: action.text, occurredAt: new Date(), traceId: context.traceId, lifecycle: { actionId: action.id, source: "facebook_comment" } }).onConflictDoNothing();
+      return { status: "EXECUTED" as const, externalId: sent.id };
+    } catch (error) { return this.commentFailure(row.decision.id, context.businessId, error); }
+  }
+  async hideComment(context: TrustedBusinessContext, commentId: string, decisionKey: string) {
+    const row = await this.commentTarget(context, commentId, decisionKey, "HIDE");
+    if (row.decision.actionStatus === "COMPLETED") return { status: "EXECUTED" as const, externalId: row.comment.externalCommentId };
+    if (!this.api.hideComment || !await this.claimComment(row.decision.id, context.businessId)) return { status: "SKIPPED" as const, safeReason: "COMMENT_RECONCILIATION_REQUIRED" };
+    try {
+      const token = await this.vault.resolve(context, row.connection.credentialRefId!, "meta_page_token");
+      if (!await this.api.hideComment(row.comment.externalCommentId, token)) throw new MetaApiError("META_REJECTED");
+      await this.db.transaction(async (tx) => { await tx.update(commentDecisions).set({ actionStatus: "COMPLETED", externalActionId: row.comment.externalCommentId, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(commentDecisions.id, row.decision.id), eq(commentDecisions.businessId, context.businessId))); await tx.update(facebookComments).set({ isHidden: true, updatedAt: new Date() }).where(and(eq(facebookComments.id, commentId), eq(facebookComments.businessId, context.businessId))); });
+      return { status: "EXECUTED" as const, externalId: row.comment.externalCommentId };
+    } catch (error) { return this.commentFailure(row.decision.id, context.businessId, error); }
+  }
   async execute(context: TrustedBusinessContext, action: UniversalChannelAction) {
+    if (action.type === "ReplyToComment") return this.executeCommentReply(context, action);
     const row = await this.target(context); const connection = row.connection;
     if (!connection.credentialRefId) return { status: "SKIPPED" as const, safeReason: "CREDENTIAL_UNAVAILABLE" };
     if (!row.thread.lastCustomerMessageAt || Date.now() - row.thread.lastCustomerMessageAt.getTime() > 24 * 3600_000) return { status: "SKIPPED" as const, safeReason: "META_STANDARD_WINDOW_CLOSED" };
@@ -142,6 +194,7 @@ export class FacebookMessengerAdapter implements ChannelAdapter {
     }
   }
   async reconcile(context: TrustedBusinessContext, action: UniversalChannelAction) {
+    if (action.type === "ReplyToComment") { const row = await this.commentTarget(context, action.commentId, action.idempotencyKey, "REPLY"); return row.decision.actionStatus === "COMPLETED" ? { status: "EXECUTED" as const, ...(row.decision.externalActionId ? { externalId: row.decision.externalActionId } : {}) } : row.decision.actionStatus === "FAILED" ? { status: "NOT_FOUND" as const } : { status: "UNKNOWN" as const }; }
     const row = await this.target(context, false);
     const send = (await this.db.select().from(messengerSends).where(and(eq(messengerSends.businessId, context.businessId), eq(messengerSends.connectionId, row.connection.id), eq(messengerSends.idempotencyKey, action.idempotencyKey), eq(messengerSends.actionId, action.id))).limit(1))[0];
     if (send?.state === "COMPLETED") return { status: "EXECUTED" as const, ...(send.externalMessageId ? { externalId: send.externalMessageId } : {}) };

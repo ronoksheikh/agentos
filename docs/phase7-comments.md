@@ -1,0 +1,26 @@
+# Phase 7 Facebook Page comments
+
+This module handles Page `feed` comment additions through the existing signed Meta webhook, raw-event store, universal event router, and Facebook Messenger adapter. It does not introduce another agent runtime or channel. The migration is `0011_nervous_william_stryker.sql`.
+
+## Processing and safety
+
+- The webhook verifies `X-Hub-Signature-256` over the raw body before parsing Page IDs. Only bounded `feed` changes with `item=comment` and `verb=add` become `comment.created` events. Raw-event and decision keys suppress replay.
+- The processor loads the comment and its Page post through the scoped Page token, verifies the post author equals the connected Page, stores the post/comment and customer conversation, then evaluates a typed classifier result against the Page policy, business feature flag, observed capability flags, ownership, and confidence threshold.
+- Defaults are automation off, keep/review on uncertainty, and no deletion. Page-authored or unidentified comments cannot trigger automatic writes. Human-owned conversations suppress replies. Scam/spam hiding and public replies require explicit policy plus observed capability tests.
+- A reply uses the existing AgentOS runtime in `draftOnly` mode. That mode allows no tool calls or domain/channel action application. The server accepts exactly one safe `SendMessage` candidate, binds the trusted comment ID and decision key, and sends a `ReplyToComment` action through the channel registry and Facebook Messenger adapter. The model cannot choose the Graph target.
+- The adapter checks tenant, connection, agent, conversation ownership, decision, capability grant, token scopes, observed read/reply/hide capability, and Graph `can_comment`/`can_hide` before writing. A claimed write is not blindly retried. An ambiguous Graph outcome is `UNKNOWN` and goes to review. A replay of an unfinished decision is moved to review or unknown without resending.
+- Decisions, safe rationale codes, policy versions, idempotency keys, external action IDs, audit logs, notifications, and client-safe realtime activity are persisted. The comment row state reflects the final action status if a write did not complete.
+
+## Agency setup and live verification
+
+The agency Messenger Page view exposes feed subscription, business rollout and Page policy settings. It also has controlled read, reply, and hide tests. A test needs an operator-created comment on a post authored by the connected Page. Reply posts a public test response; Hide hides the chosen test comment. The UI says this before submission.
+
+The server inspects the Page token with Meta `debug_token`, checking validity, app ID, Page token type, and `pages_read_engagement`; reply/hide additionally require `pages_manage_engagement`. It verifies the target comment and Page post before each test. Only a successful observed Graph read or write sets the corresponding capability flag. A write test records `EXECUTING` before calling Meta; uncertain results remain blocked for review. Replacing the Page token clears prior capability and scope evidence.
+
+No authorized Meta app, Page token, controlled comment, or observed webhook was available during this implementation. The local fake Meta drill proves the code path, not that this deployment has Meta permission or app approval. A release operator must subscribe a real Page feed, verify a signed comment event, run read/reply/hide tests on controlled comments, check the visible Page result, and confirm normal comments do not loop on Page replies. The official [Meta Comment SDK object](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/comment.py) and [Page subscribed fields](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/page.py) were used for API shape; Meta's developer reference returned HTTP 429 here.
+
+## Validation and remaining scope
+
+`bun scripts/phase7-comments-integration.ts` on a migrated PostgreSQL database covers signed receipt, dedupe, scoped Graph context, policy updates and tenant rejection, controlled capability tests, keep, handoff, runtime reply, hide, author and ownership guards, ambiguous writes, replay, audit, notification, and realtime. `tests/phase7-comments-policy.test.ts`, `tests/phase7-comments-meta.test.ts`, and the runtime draft test cover policy, Graph paths, and side-effect isolation. Admin/client production builds pass.
+
+The classifier is conservative rule-based and may need a measured model-backed variant after evaluation. Parent comment text/product mapping, human review UI, comment analytics, and actual live Meta verification remain open Phase 7 work. Deletion remains intentionally unavailable until a separately verified destructive workflow exists.

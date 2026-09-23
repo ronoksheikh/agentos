@@ -73,7 +73,7 @@ export class Phase5Store {
   async getEvent(businessId: string, eventId: string): Promise<UniversalEvent> {
     const row = (await this.db.select().from(dbs.universalEvents).where(and(eq(dbs.universalEvents.businessId, businessId), eq(dbs.universalEvents.id, eventId))).limit(1))[0];
     if (!row || !row.rawEventId) throw new Error("EVENT_NOT_FOUND");
-    return universalEventSchema.parse({ ...row, rawEventId: row.rawEventId, occurredAt: row.occurredAt.toISOString(), receivedAt: row.receivedAt.toISOString() });
+    return universalEventSchema.parse({ ...row, conversationId: row.conversationId ?? undefined, customerId: row.customerId ?? undefined, rawEventId: row.rawEventId, occurredAt: row.occurredAt.toISOString(), receivedAt: row.receivedAt.toISOString() });
   }
   async getBatch(businessId: string, batchId: string) {
     const row = (await this.db.select().from(dbs.messageBatches).where(and(eq(dbs.messageBatches.businessId, businessId), eq(dbs.messageBatches.id, batchId))).limit(1))[0];

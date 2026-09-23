@@ -1,4 +1,4 @@
-export { FacebookMessengerAdapter, FACEBOOK_MESSENGER, flattenMetaNotifications, verifyMetaChallenge, verifyMetaSignature, type MessengerAssetResolver } from "./adapter";
+export { FacebookMessengerAdapter, FACEBOOK_MESSENGER, flattenMetaFeedChanges, flattenMetaNotifications, verifyMetaChallenge, verifyMetaSignature, type MessengerAssetResolver } from "./adapter";
 export { GraphMetaApi, MetaApiError, META_GRAPH_VERSION, type MetaApi } from "./meta-api";
 export { PostgresCredentialVault } from "./secrets";
 export { MetaConnectionService } from "./connections";

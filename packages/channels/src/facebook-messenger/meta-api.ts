@@ -10,8 +10,14 @@ export interface MetaApi {
   listPages(userToken: string): Promise<MetaPage[]>;
   verifyPage(pageId: string, pageToken: string): Promise<{ id: string; name: string }>;
   subscribePage(pageId: string, pageToken: string): Promise<boolean>;
+  subscribeFeed?(pageId: string, pageToken: string): Promise<boolean>;
   isSubscribed(pageId: string, pageToken: string): Promise<boolean>;
   send(pageId: string, pageToken: string, body: Record<string, unknown>): Promise<{ messageId?: string }>;
+  getComment?(commentId: string, pageToken: string): Promise<{ id: string; message: string; createdAt?: string; authorId?: string; parentId?: string; postId?: string; canComment: boolean; canHide: boolean; isHidden: boolean }>;
+  getPost?(postId: string, pageToken: string): Promise<{ id: string; message?: string; authorId?: string }>;
+  replyComment?(commentId: string, pageToken: string, message: string): Promise<{ id: string }>;
+  hideComment?(commentId: string, pageToken: string): Promise<boolean>;
+  inspectToken?(pageToken: string): Promise<{ appId: string; valid: boolean; type: string; scopes: string[]; expiresAt?: number }>;
 }
 
 const errorCode = (status: number, code?: number): MetaApiError["safeCode"] => {
@@ -55,6 +61,10 @@ export class GraphMetaApi implements MetaApi {
     const result = await this.call<unknown>(`${encodeURIComponent(pageId)}/subscribed_apps`, pageToken, { method: "POST", body: { subscribed_fields: "messages,message_deliveries,message_reads,messaging_postbacks" }, form: true });
     return z.object({ success: z.boolean() }).parse(result).success;
   }
+  async subscribeFeed(pageId: string, pageToken: string) {
+    const result = await this.call<unknown>(`${encodeURIComponent(pageId)}/subscribed_apps`, pageToken, { method: "POST", body: { subscribed_fields: "messages,message_deliveries,message_reads,messaging_postbacks,feed" }, form: true });
+    return z.object({ success: z.boolean() }).parse(result).success;
+  }
   async isSubscribed(pageId: string, pageToken: string) {
     const result = await this.call<unknown>(`${encodeURIComponent(pageId)}/subscribed_apps`, pageToken);
     return z.object({ data: z.array(z.object({ id: z.string() }).passthrough()) }).parse(result).data.some((app) => app.id === this.appId);
@@ -63,5 +73,28 @@ export class GraphMetaApi implements MetaApi {
     const result = await this.call<unknown>(`${encodeURIComponent(pageId)}/messages`, pageToken, { method: "POST", body });
     const messageId = z.object({ message_id: z.string().optional() }).parse(result).message_id;
     return messageId ? { messageId } : {};
+  }
+  async getComment(commentId: string, pageToken: string) {
+    const result = await this.call<unknown>(`${encodeURIComponent(commentId)}?fields=id,message,created_time,from,parent,object,can_comment,can_hide,is_hidden`, pageToken);
+    const parsed = z.object({ id: z.string(), message: z.string().max(100_000), created_time: z.string().optional(), from: z.object({ id: z.string() }).optional(), parent: z.object({ id: z.string() }).optional(), object: z.object({ id: z.string() }).optional(), can_comment: z.boolean().default(false), can_hide: z.boolean().default(false), is_hidden: z.boolean().default(false) }).parse(result);
+    return { id: parsed.id, message: parsed.message, ...(parsed.created_time ? { createdAt: parsed.created_time } : {}), ...(parsed.from ? { authorId: parsed.from.id } : {}), ...(parsed.parent ? { parentId: parsed.parent.id } : {}), ...(parsed.object ? { postId: parsed.object.id } : {}), canComment: parsed.can_comment, canHide: parsed.can_hide, isHidden: parsed.is_hidden };
+  }
+  async getPost(postId: string, pageToken: string) {
+    const result = await this.call<unknown>(`${encodeURIComponent(postId)}?fields=id,message,from`, pageToken);
+    const parsed = z.object({ id: z.string(), message: z.string().max(100_000).optional(), from: z.object({ id: z.string() }).optional() }).parse(result);
+    return { id: parsed.id, ...(parsed.message ? { message: parsed.message } : {}), ...(parsed.from ? { authorId: parsed.from.id } : {}) };
+  }
+  async replyComment(commentId: string, pageToken: string, message: string) {
+    const result = await this.call<unknown>(`${encodeURIComponent(commentId)}/comments`, pageToken, { method: "POST", body: { message }, form: true });
+    return z.object({ id: z.string().min(1) }).parse(result);
+  }
+  async hideComment(commentId: string, pageToken: string) {
+    const result = await this.call<unknown>(encodeURIComponent(commentId), pageToken, { method: "POST", body: { is_hidden: "true" }, form: true });
+    return z.object({ success: z.boolean() }).parse(result).success;
+  }
+  async inspectToken(pageToken: string) {
+    const result = await this.call<unknown>(`debug_token?input_token=${encodeURIComponent(pageToken)}`, `${this.appId}|${this.appSecret}`);
+    const parsed = z.object({ data: z.object({ app_id: z.string(), is_valid: z.boolean(), type: z.string(), scopes: z.array(z.string()).default([]), expires_at: z.number().int().optional() }) }).parse(result).data;
+    return { appId: parsed.app_id, valid: parsed.is_valid, type: parsed.type, scopes: parsed.scopes, ...(parsed.expires_at ? { expiresAt: parsed.expires_at } : {}) };
   }
 }

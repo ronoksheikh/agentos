@@ -13,7 +13,7 @@ const base = {
 };
 const message = z.object({ ...base, type: z.literal("message.received"), payload: z.object({ messageId: ulidSchema, text: z.string().max(100_000).optional(), attachmentIds: z.array(ulidSchema).max(20).default([]), replyToExternalId: reference.optional(), pageContext: z.object({ url: z.url().max(2_048), title: z.string().max(300).optional(), productRef: z.string().max(200).optional(), cartRef: z.string().max(200).optional(), consented: z.boolean() }).optional(), urgent: z.boolean().default(false) }) });
 const attachment = z.object({ ...base, type: z.literal("attachment.received"), payload: z.object({ attachmentId: ulidSchema, messageId: ulidSchema.optional() }) });
-const comment = z.object({ ...base, type: z.literal("comment.created"), payload: z.object({ externalCommentId: reference }) });
+const comment = z.object({ ...base, type: z.literal("comment.created"), payload: z.object({ externalCommentId: reference, externalPostId: reference.optional(), externalParentId: reference.optional() }) });
 const reaction = z.object({ ...base, type: z.literal("reaction.created"), payload: z.object({ externalMessageId: reference, reaction: z.string().max(50) }) });
 const delivery = z.object({ ...base, type: z.enum(["message.delivered", "message.read"]), payload: z.object({ externalMessageId: reference, at: isoDateTimeSchema }) });
 const order = z.object({ ...base, type: z.enum(["order.created", "order.updated"]), payload: z.object({ orderId: ulidSchema }) });

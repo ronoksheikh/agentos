@@ -42,10 +42,11 @@ export class InboundGateway {
 }
 
 export class EventRouter {
-  constructor(private readonly store: Phase5Store, private readonly attachment?: (event: UniversalEvent, signal: AbortSignal) => Promise<void>, private readonly browser?: (businessId: string, browserRunId: string, signal: AbortSignal) => Promise<void>) {}
+  constructor(private readonly store: Phase5Store, private readonly attachment?: (event: UniversalEvent, signal: AbortSignal) => Promise<void>, private readonly browser?: (businessId: string, browserRunId: string, signal: AbortSignal) => Promise<void>, private readonly comments?: (event: Extract<UniversalEvent, { type: "comment.created" }>, signal: AbortSignal) => Promise<void>) {}
   async process(event: UniversalEvent, signal: AbortSignal) {
     if (signal.aborted) throw Object.assign(new Error("Cancelled"), { code: "CANCELLED" });
-    if (event.type === "comment.created" || event.type === "reaction.created") { await this.store.eventState(event.businessId, event.id, "IGNORED", "POLICY_DEFERRED"); return; }
+    if (event.type === "comment.created") { if (!this.comments) throw Object.assign(new Error("Comment processor unavailable"), { code: "COMMENT_PROCESSOR_UNAVAILABLE" }); await this.comments(event, signal); await this.store.eventState(event.businessId, event.id, "PROCESSED"); return; }
+    if (event.type === "reaction.created") { await this.store.eventState(event.businessId, event.id, "IGNORED", "POLICY_DEFERRED"); return; }
     if (event.type === "message.delivered" || event.type === "message.read") {
       await this.store.db.update(dbs.messages).set({ lifecycle: sql`${dbs.messages.lifecycle} || ${JSON.stringify({ [event.type]: event.payload.at })}::jsonb`, updatedAt: new Date() }).where(and(eq(dbs.messages.businessId, event.businessId), eq(dbs.messages.connectionId, event.connectionId), eq(dbs.messages.externalMessageId, event.payload.externalMessageId)));
       await this.store.eventState(event.businessId, event.id, "PROCESSED"); return;

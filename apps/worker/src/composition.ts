@@ -6,6 +6,7 @@ import { DeferredChannelActionExecutor } from "@agentos/actions";
 import { AttachmentService, ElevenLabsAdapter, ElevenLabsHttpClient, FileObjectStorage } from "@agentos/attachments";
 import { FacebookMessengerAdapter, GraphMetaApi, InMemoryChannelRegistry, MessengerMediaDownloader, PostgresCredentialVault, PostgresMessengerAssetResolver, RegistryPresenceController } from "@agentos/channels";
 import { LayeredContextEngine } from "@agentos/context";
+import { PostgresCommentProcessor, PostgresCommentWriteExecutor, RuleCommentClassifier } from "@agentos/comments";
 import { DefaultKnowledgeParser } from "@agentos/knowledge";
 import { OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint } from "@agentos/models";
 import { PostgresAgentVersionRepository, PostgresRealtimeBus, PostgresRuntimeActionRepository, PostgresRuntimeContextSource, PostgresRuntimeDomainActions, PostgresRuntimeTraceRepository } from "@agentos/phase6";
@@ -64,5 +65,6 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
     actions: new DeferredChannelActionExecutor(new PostgresRuntimeActionRepository(db), new PostgresRuntimeDomainActions(db)),
     traces: new PostgresRuntimeTraceRepository(db), realtime, presence,
   });
-  return { db, redisUrl, runtime, registry, presence, realtime, attachment, capabilities: async () => ["conversation.read", "handoff.request", ...(browserUrl ? ["browser.use"] : [])] };
+  const commentProcessor = new PostgresCommentProcessor(db, api, vault, realtime, new RuleCommentClassifier(), new PostgresCommentWriteExecutor(db, runtime, registry));
+  return { db, redisUrl, runtime, registry, presence, realtime, attachment, comments: (event, signal) => commentProcessor.process(event, signal).then(() => {}), capabilities: async () => ["conversation.read", "handoff.request", ...(browserUrl ? ["browser.use"] : [])] };
 }

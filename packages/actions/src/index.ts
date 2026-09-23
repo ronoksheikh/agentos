@@ -8,6 +8,7 @@ export const universalChannelActionSchema = z.discriminatedUnion("type", [
   z.object({ ...actionBase, type: z.literal("SendFile"), assetId: ulidSchema, filename: z.string().min(1).max(255) }),
   z.object({ ...actionBase, type: z.literal("SendProduct"), productRef: z.string().min(1), title: z.string().min(1), url: z.url().optional(), fallbackText: z.string().min(1) }),
   z.object({ ...actionBase, type: z.literal("ReplyToMessage"), messageId: ulidSchema, text: z.string().min(1).max(20_000) }),
+  z.object({ ...actionBase, type: z.literal("ReplyToComment"), commentId: ulidSchema, text: z.string().min(1).max(2_000) }),
   z.object({ ...actionBase, type: z.literal("ReactToMessage"), messageId: ulidSchema, reaction: z.string().min(1).max(50) }),
 ]);
 

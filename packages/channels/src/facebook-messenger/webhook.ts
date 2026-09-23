@@ -1,10 +1,10 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ulid } from "ulid";
-import { agents, channelConnections, conversations, customerIdentities, customers, messengerThreads } from "@agentos/database";
+import { agents, channelConnections, conversations, customerIdentities, customers, messengerThreads, rawInboundEvents } from "@agentos/database";
 import { InboundGateway, Phase5Store } from "@agentos/phase5";
 import { createTrustedBusinessContext } from "@agentos/shared";
-import { FACEBOOK_MESSENGER, FacebookMessengerAdapter, flattenMetaNotifications, verifyMetaChallenge, verifyMetaSignature } from "./adapter";
+import { FACEBOOK_MESSENGER, FacebookMessengerAdapter, flattenMetaFeedChanges, flattenMetaNotifications, verifyMetaChallenge, verifyMetaSignature } from "./adapter";
 import { MetaConnectionService } from "./connections";
 
 export class MessengerWebhook {
@@ -36,8 +36,8 @@ export class MessengerWebhook {
   async receive(headers: Headers, body: Uint8Array) {
     // The raw bytes must be authenticated before parsing Page IDs or creating tenant records.
     if (!verifyMetaSignature(body, headers.get("x-hub-signature-256"), this.appSecret)) return new Response("Unauthorized", { status: 401 });
-    let notifications: ReturnType<typeof flattenMetaNotifications>;
-    try { notifications = flattenMetaNotifications(body); } catch { return new Response("Malformed webhook", { status: 400 }); }
+    let notifications: ReturnType<typeof flattenMetaNotifications>; let feedChanges: ReturnType<typeof flattenMetaFeedChanges>;
+    try { notifications = flattenMetaNotifications(body); feedChanges = flattenMetaFeedChanges(body); } catch { return new Response("Malformed webhook", { status: 400 }); }
     for (const [index, { pageId, notification }] of notifications.entries()) {
       const connection = (await this.db.select().from(channelConnections).where(and(eq(channelConnections.channel, FACEBOOK_MESSENGER), eq(channelConnections.externalPageId, pageId))).limit(1))[0];
       if (!connection || !["TEST_PENDING", "CONNECTED"].includes(connection.state)) return new Response("Page unavailable", { status: 404 });
@@ -59,6 +59,18 @@ export class MessengerWebhook {
         if (connection.state === "TEST_PENDING" && notification.message?.mid) await this.connections.recordTestMessage(connection.businessId, connection.id, notification.message.mid, thread.conversationId);
         await this.db.update(channelConnections).set({ lastWebhookAt: new Date(), updatedAt: new Date() }).where(eq(channelConnections.id, connection.id));
       } catch { return new Response("Webhook receipt unavailable", { status: 503 }); }
+    }
+    for (const [index, change] of feedChanges.entries()) {
+      const connection = (await this.db.select().from(channelConnections).where(and(eq(channelConnections.channel, FACEBOOK_MESSENGER), eq(channelConnections.externalPageId, change.pageId))).limit(1))[0];
+      if (!connection || !["TEST_PENDING", "CONNECTED"].includes(connection.state)) return new Response("Page unavailable", { status: 404 });
+      const activeAgent = (await this.db.select({ activeVersionId: agents.activeVersionId }).from(agents).where(and(eq(agents.id, connection.agentId), eq(agents.businessId, connection.businessId))).limit(1))[0];
+      if (!activeAgent?.activeVersionId) return new Response("Agent unavailable", { status: 503 });
+      const prior = (await this.db.select({ id: rawInboundEvents.id }).from(rawInboundEvents).where(and(eq(rawInboundEvents.businessId, connection.businessId), eq(rawInboundEvents.connectionId, connection.id), eq(rawInboundEvents.dedupeKey, `meta:comment:${change.commentId}:add`))).limit(1))[0];
+      if (prior) continue;
+      const context = createTrustedBusinessContext({ businessId: connection.businessId, principal: { kind: "adapter", connectionId: connection.id }, source: "verified_adapter", agentId: connection.agentId, traceId: ulid(), capabilityGrants: [] });
+      const internalHeaders = new Headers(headers); internalHeaders.set("x-agentos-feed-index", String(index));
+      try { await this.gateway.accept(this.adapter, { headers: internalHeaders, body }, context); await this.db.update(channelConnections).set({ lastWebhookAt: new Date(), updatedAt: new Date() }).where(eq(channelConnections.id, connection.id)); }
+      catch { return new Response("Webhook receipt unavailable", { status: 503 }); }
     }
     return new Response("EVENT_RECEIVED", { status: 200 });
   }

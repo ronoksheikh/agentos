@@ -3,7 +3,7 @@ import { z } from "zod";
 import { isoDateTimeSchema, jsonValueSchema, nowIso, redactSafe, ulidSchema, type JsonValue } from "@agentos/shared";
 import type { AuthenticatedPrincipal, RealtimeScopeAuthorizer } from "@agentos/auth";
 
-export const realtimeTypeSchema = z.enum(["run.started", "context.built", "model.requested", "model.completed", "tool.requested", "tool.completed", "action.validated", "action.applied", "memory.updated", "run.completed", "run.failed", "run.cancelled", "conversation.updated", "batch.formed", "batch.suppressed", "work.queued", "work.retry", "work.dead", "delivery.sent", "delivery.failed", "handoff.requested", "handoff.updated", "notification.updated", "counter.updated", "knowledge.processing", "knowledge.ready", "knowledge.failed", "browser.started", "browser.activity", "browser.closed", "attachment.processing", "attachment.ready", "attachment.failed", "order.updated", "goal.updated"]);
+export const realtimeTypeSchema = z.enum(["run.started", "context.built", "model.requested", "model.completed", "tool.requested", "tool.completed", "action.validated", "action.applied", "memory.updated", "run.completed", "run.failed", "run.cancelled", "conversation.updated", "batch.formed", "batch.suppressed", "work.queued", "work.retry", "work.dead", "delivery.sent", "delivery.failed", "handoff.requested", "handoff.updated", "notification.updated", "counter.updated", "knowledge.processing", "knowledge.ready", "knowledge.failed", "browser.started", "browser.activity", "browser.closed", "attachment.processing", "attachment.ready", "attachment.failed", "order.updated", "goal.updated", "comment.classified", "comment.hidden", "comment.replied", "comment.review"]);
 export const realtimeEnvelopeSchema = z.object({ id: ulidSchema, schemaVersion: z.literal("1.0"), type: realtimeTypeSchema, occurredAt: isoDateTimeSchema, sequence: z.number().int().positive().optional(), businessId: ulidSchema, conversationId: ulidSchema.optional(), runId: ulidSchema.optional(), traceId: ulidSchema, payload: jsonValueSchema });
 export type RealtimeEnvelope = z.infer<typeof realtimeEnvelopeSchema>;
 export interface RealtimeBus { publish(event: Omit<RealtimeEnvelope, "id" | "schemaVersion" | "occurredAt" | "sequence">): Promise<RealtimeEnvelope>; replay(businessId: string, afterSequence?: number): Promise<RealtimeEnvelope[]>; }
@@ -68,7 +68,7 @@ export class AuthenticatedRealtimeConnection {
 export const safeRealtimePayload = (payload: unknown): JsonValue => redactSafe(payload);
 
 export const clientActivitySchema = z.object({
-  label: z.enum(["Agent started", "Customer context loaded", "Combined message batch", "Checking approved tool", "Preparing reply", "Reply sent", "Agent run failed", "Handoff requested", "Handoff updated", "Conversation updated", "Checking knowledge", "Browsing approved site", "Transcribing voice message", "Attachment ready", "Attachment failed", "Order updated", "Pending goal updated"]),
+  label: z.enum(["Agent started", "Customer context loaded", "Combined message batch", "Checking approved tool", "Preparing reply", "Reply sent", "Agent run failed", "Handoff requested", "Handoff updated", "Conversation updated", "Checking knowledge", "Browsing approved site", "Transcribing voice message", "Attachment ready", "Attachment failed", "Order updated", "Pending goal updated", "Comment classified", "Spam comment hidden", "Comment replied to", "Comment needs review"]),
   status: z.enum(["ACTIVE", "COMPLETED", "FAILED", "ATTENTION"]),
   count: z.number().int().nonnegative().optional(),
 });
@@ -91,6 +91,7 @@ export class ClientRealtimeProjector {
     "browser.started": { label: "Browsing approved site", status: "ACTIVE" }, "browser.activity": { label: "Browsing approved site", status: "ACTIVE" }, "browser.closed": { label: "Browsing approved site", status: "COMPLETED" },
     "attachment.processing": { label: "Transcribing voice message", status: "ACTIVE" }, "attachment.ready": { label: "Attachment ready", status: "COMPLETED" }, "attachment.failed": { label: "Attachment failed", status: "FAILED" },
     "order.updated": { label: "Order updated", status: "COMPLETED" }, "goal.updated": { label: "Pending goal updated", status: "COMPLETED" },
+    "comment.classified": { label: "Comment classified", status: "COMPLETED" }, "comment.hidden": { label: "Spam comment hidden", status: "COMPLETED" }, "comment.replied": { label: "Comment replied to", status: "COMPLETED" }, "comment.review": { label: "Comment needs review", status: "ATTENTION" },
   };
   project(event: RealtimeEnvelope): RealtimeEnvelope {
     const base = event.type === "run.completed" && typeof event.payload === "object" && event.payload && !Array.isArray(event.payload) && event.payload.deliveryManaged === true ? { label: "Preparing reply" as const, status: "COMPLETED" as const } : this.labels[event.type]; const payload = typeof event.payload === "object" && event.payload && !Array.isArray(event.payload) && typeof event.payload.count === "number" ? { ...base, count: Math.max(0, Math.trunc(event.payload.count)) } : base;

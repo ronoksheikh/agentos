@@ -10,6 +10,7 @@ import { FakeModelProvider } from "@agentos/models";
 import { InMemoryActionRepository, InMemoryAgentVersionRepository, InMemoryMemoryRepository, InMemoryTraceRepository } from "@agentos/persistence";
 import { InMemoryRealtimeBus } from "@agentos/realtime";
 import { ToolRegistry, createDemoLookupTool } from "@agentos/tools";
+import { createTrustedBusinessContext } from "@agentos/shared";
 import { createAgentFixture, event, ids, trusted } from "./helpers";
 import { createTestRunHandler, WS_PATH } from "../apps/api/src";
 
@@ -43,6 +44,20 @@ describe("AgentRuntime", () => {
   test("records cancellation safely", async () => {
     const controller = new AbortController(); controller.abort(); const h = harness([{ kind: "actions", actions: [], usage }]); const result = await h.runtime.run({ context: trusted(ids.businessA, controller.signal), event: event(), agentId: ids.agent });
     expect(result.status).toBe("CANCELLED"); expect(result.safeError?.code).toBe("CANCELLED"); expect((await h.traces.getRun(trusted(), result.runId))?.run.status).toBe("CANCELLED");
+  });
+
+  test("comment draft mode returns one candidate without applying actions or exposing tools", async () => {
+    const h = harness([{ kind: "actions", actions: [{ id: ulid(), schemaVersion: "1.0", type: "Remember", idempotencyKey: "draft:memory", memoryType: "note", content: "Must not persist", importance: 0.8, confidence: 0.9, sourceMessageIds: [] }, { id: ulid(), schemaVersion: "1.0", type: "SendMessage", idempotencyKey: "draft:reply", text: "Draft reply" }], usage }]);
+    const context = createTrustedBusinessContext({ businessId: ids.businessA, principal: { kind: "system", service: "comment-processor" }, source: "internal_system", agentId: ids.agent, conversationId: ids.conversation, customerId: ids.customer, traceId: ids.trace, capabilityGrants: ["conversation.read"] });
+    const result = await h.runtime.run({ context, event: event(), agentId: ids.agent, draftOnly: true, deliveryManaged: true });
+    expect(result.status).toBe("COMPLETED"); expect(result.actions.map((action) => action.type)).toEqual(["Remember", "SendMessage"]);
+    expect(await h.actions.listForRun(context, result.runId)).toHaveLength(0);
+    expect(await h.memories.listActive(context, { customerId: ids.customer })).toHaveLength(0);
+    await expect(h.runtime.run({ context: trusted(), event: event(), agentId: ids.agent, draftOnly: true })).rejects.toThrow("DRAFT_MODE_DENIED");
+    const tools = harness([{ kind: "tool_calls", calls: [{ id: ulid(), name: "demo_lookup", arguments: { key: "color" } }], usage }]);
+    const denied = await tools.runtime.run({ context, event: event(), agentId: ids.agent, draftOnly: true });
+    expect(denied.safeError?.code).toBe("DRAFT_TOOL_CALL_DENIED");
+    expect((await tools.traces.getRun(context, denied.runId))?.toolCalls).toHaveLength(0);
   });
 
   test("enforces step, tool-call, and output limits", async () => {
