@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import Link from "next/link";
 import { Alert, Badge, Button, Card, Checkbox, Group, NumberInput, PasswordInput, Stack, Text, TextInput, Title } from "@mantine/core";
 import { PostgresCommentPolicyService } from "@agentos/comments";
 import { agents, businesses } from "@agentos/database";
@@ -29,6 +30,7 @@ export default async function MessengerPage({ params, searchParams }: { params: 
   return <DashboardShell>
     <Stack gap="lg">
       <Title order={2}>Facebook Messenger Pages</Title>
+      <Button component={Link} href={`/businesses/${businessId}/comments`} variant="light">Comment analytics and review</Button>
       {query.status && <Alert color={query.status.includes("failed") || query.status.includes("error") || query.status.includes("missing") ? "red" : "blue"}>{query.status.replaceAll("-", " ")}</Alert>}
       {!services && <Alert color="red">Messenger server configuration is incomplete. Set META_APP_ID, META_APP_SECRET, META_OAUTH_REDIRECT_URI, META_WEBHOOK_CALLBACK_URL, META_WEBHOOK_VERIFY_TOKEN and CREDENTIAL_ENCRYPTION_KEY.</Alert>}
       {instructions && <Card withBorder><Stack gap="xs"><Text fw={600}>Meta application setup</Text><Text size="sm">Webhook callback: <code>{instructions.callbackUrl}</code></Text><Text size="sm">Graph API: {instructions.graphVersion}</Text><Text size="sm">Verification token configured: {instructions.verifyTokenPresent ? "Yes" : "No"}.</Text>{"initialVerificationToken" in instructions && <Text size="sm">Initial verification token for Meta App setup: <code>{instructions.initialVerificationToken}</code>. It is hidden here after the first successful handshake.</Text>}<Text size="sm">Enable pages_messaging, pages_show_list and pages_manage_metadata in your Meta App. Meta must verify the callback before Page activation.</Text></Stack></Card>}

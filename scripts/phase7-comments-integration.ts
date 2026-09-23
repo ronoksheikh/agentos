@@ -6,7 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { ulid } from "ulid";
 import * as dbs from "@agentos/database";
 import { FacebookMessengerAdapter, InMemoryChannelRegistry, MessengerWebhook, MetaConnectionService, PostgresCredentialVault, type MetaApi } from "@agentos/channels";
-import { PostgresCommentPolicyService, PostgresCommentProcessor, PostgresCommentWriteExecutor } from "@agentos/comments";
+import { PostgresCommentAnalytics, PostgresCommentPolicyService, PostgresCommentProcessor, PostgresCommentWriteExecutor } from "@agentos/comments";
 import type { AgentRuntime, AgentRunInput, AgentRunResult } from "@agentos/agent-runtime";
 import { EventRouter, Phase5Store } from "@agentos/phase5";
 import { InMemoryRealtimeBus } from "@agentos/realtime";
@@ -102,5 +102,16 @@ try {
   const uncertainEvent = (await db.select({ id: dbs.universalEvents.id }).from(dbs.universalEvents).where(and(eq(dbs.universalEvents.businessId, ids.businessA), eq(dbs.universalEvents.dedupeKey, "meta:comment:comment-5:add"))))[0]!;
   await router.process(await store.getEvent(ids.businessA, uncertainEvent.id), new AbortController().signal);
   assert.equal((await db.select().from(dbs.commentDecisions).where(eq(dbs.commentDecisions.id, uncertainDecision.id)))[0]!.actionStatus, "UNKNOWN");
+  const analytics = new PostgresCommentAnalytics(db);
+  const report = await analytics.summary(agency, connectionId);
+  assert.ok(report.received >= 6 && (report.decisionsByOutcome.REPLY ?? 0) >= 1 && (report.decisionsByOutcome.HIDE ?? 0) >= 1);
+  assert.ok(report.openReviews >= 2 && report.reviewQueue.some((row) => row.id === uncertainDecision.id));
+  assert.equal((await analytics.summary(wrongTenant, connectionId)).received, 0);
+  await assert.rejects(() => analytics.markReviewed(wrongTenant, uncertainDecision.id, "FOLLOW_UP_REQUIRED"), /COMMENT_DECISION_NOT_FOUND/);
+  await assert.rejects(() => analytics.markReviewed(agency, uncertainDecision.id, "ACKNOWLEDGED"), /EXTERNAL_OUTCOME_UNVERIFIED/);
+  const reviewId = await analytics.markReviewed(agency, uncertainDecision.id, "FOLLOW_UP_REQUIRED");
+  assert.equal(await analytics.markReviewed(agency, uncertainDecision.id, "FOLLOW_UP_REQUIRED"), reviewId);
+  await assert.rejects(() => analytics.markReviewed(agency, uncertainDecision.id, "EXTERNAL_CHECKED"), /REVIEW_ALREADY_RECORDED/);
+  assert.equal((await analytics.summary(agency, connectionId)).openReviews, report.openReviews - 1);
   console.log("Phase 7 comments: signed feed, dedupe, scoped Graph context, safe keep/handoff, runtime reply, hide, unknown outcome, author guard, human ownership, audit/realtime, and replay passed");
 } finally { await pool.end(); }
