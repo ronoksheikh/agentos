@@ -2,10 +2,13 @@ services:
   browser-egress:
     build:
       context: .
-      dockerfile: apps/browser-worker/Dockerfile
-      target: egress
+      dockerfile: apps/browser-egress/Dockerfile
     environment:
       BROWSER_EGRESS_TOKEN: ${BROWSER_EGRESS_TOKEN:?set BROWSER_EGRESS_TOKEN}
+      BROWSER_MODEL_BASE_URL: ${BROWSER_MODEL_BASE_URL:-}
+      BROWSER_MODEL_ID: ${BROWSER_MODEL_ID:-}
+      BROWSER_MODEL_API_KEY: ${BROWSER_MODEL_API_KEY:-}
+      BROWSER_MODEL_GATEWAY_TOKEN: ${BROWSER_MODEL_GATEWAY_TOKEN:-}
     ports: ["127.0.0.1:4317:4317"]
     networks: [browser-private, browser-public]
     read_only: true
@@ -17,23 +20,24 @@ services:
   browser-worker:
     build:
       context: .
-      dockerfile: apps/browser-worker/Dockerfile
-      target: browser
+      dockerfile: apps/browser-use-worker/Dockerfile
     depends_on: [browser-egress]
     environment:
-      BROWSER_CHROME_PATH: /usr/bin/chromium
       BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?set BROWSER_WORKER_TOKEN}
       BROWSER_EGRESS_TOKEN: ${BROWSER_EGRESS_TOKEN:?set BROWSER_EGRESS_TOKEN}
       BROWSER_EGRESS_CONTROL_URL: http://browser-egress:3127
+      BROWSER_MODEL_ID: ${BROWSER_MODEL_ID:-}
+      BROWSER_MODEL_GATEWAY_TOKEN: ${BROWSER_MODEL_GATEWAY_TOKEN:-}
     networks: [browser-private]
     read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=512m
-      - /screenshots:rw,noexec,nosuid,size=128m
+      - /tmp:rw,nosuid,size=512m
+      - /screenshots:rw,noexec,nosuid,uid=10001,gid=10001,size=128m
+      - /home/browseruse:rw,noexec,nosuid,uid=10001,gid=10001,size=128m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    pids_limit: 256
-    mem_limit: 1g
+    pids_limit: 1024
+    mem_limit: 2g
 networks:
   browser-private:
     internal: true

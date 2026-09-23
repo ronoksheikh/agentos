@@ -6,4 +6,6 @@ coverage/
 dist/
 .next/
 *.log
+__pycache__/
+*.pyc
 .DS_Store

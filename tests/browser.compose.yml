@@ -1,6 +1,7 @@
 services:
   browser-egress:
     environment:
+      BROWSER_TEST_MODE: "1"
       BROWSER_CONTROLLED_TEST_HOST: browser.test
       BROWSER_CONTROLLED_TEST_IP: 127.0.0.1
       BROWSER_TEST_CERT_DIR: /certs

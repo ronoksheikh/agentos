@@ -40,7 +40,8 @@ Keep a pragmatic shape such as:
 apps/
   api/                 # HTTP API, WebSocket endpoint, webhook entry points
   worker/              # BullMQ consumers and scheduled work when introduced
-  browser-worker/      # isolated browser execution when introduced
+  browser-use-worker/  # isolated open-source Python Browser Use execution
+  browser-egress/      # authenticated browser bridge and restricted egress
   admin/               # internal agency Next.js + Mantine application
   client/              # business-facing Next.js + Mantine application
 packages/

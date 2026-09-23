@@ -19,8 +19,7 @@
     "client:dev": "next dev apps/client -p 3001",
     "client:build": "next build apps/client",
     "worker:start": "bun apps/worker/src/index.ts",
-    "browser-worker:start": "bun apps/browser-worker/src/index.ts",
-    "browser-egress:start": "bun apps/browser-worker/src/egress.ts"
+    "browser-egress:start": "bun apps/browser-egress/src/index.ts"
   },
   "dependencies": {
     "@mantine/core": "^8",

@@ -4,6 +4,8 @@ node_modules
 **/.next
 .next
 *.log
+**/__pycache__
+*.pyc
 docs
 tests
 .env

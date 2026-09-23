@@ -5,7 +5,7 @@ const pageSchema = z.object({ url: z.url(), title: z.string() });
 const textSchema = z.object({ text: z.string() });
 const shotSchema = z.object({ objectRef: z.string() });
 
-/** Transport for the isolated CDP worker. It never returns raw screenshots or browser credentials. */
+/** Transport for the isolated Browser Use worker. It never returns raw screenshots or browser credentials. */
 export class RemoteBrowserAdapter implements BrowserAdapter {
   constructor(private readonly endpoint: string, private readonly token: string) {
     const url = new URL(endpoint);
@@ -27,5 +27,6 @@ export class RemoteBrowserAdapter implements BrowserAdapter {
   async type(sessionId: string, selector: string, value: string, signal: AbortSignal) { this.attachCancellation(sessionId, signal); await this.call(sessionId, "type", { selector, value }, signal); }
   async extract(sessionId: string, selector: string, signal: AbortSignal) { this.attachCancellation(sessionId, signal); return textSchema.parse(await this.call(sessionId, "extract", { selector }, signal)).text; }
   async screenshot(sessionId: string, signal: AbortSignal) { this.attachCancellation(sessionId, signal); return shotSchema.parse(await this.call(sessionId, "screenshot", {}, signal)); }
+  async research(sessionId: string, task: string, signal: AbortSignal) { this.attachCancellation(sessionId, signal); return z.object({ text: z.string(), url: z.url(), totalTokens: z.number().int().min(0) }).parse(await this.call(sessionId, "research", { task }, signal)); }
   async close(sessionId: string) { await this.call(sessionId, "close").catch(() => {}); }
 }
