@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "feature_flags_global_key_uq" ON "feature_flags" USING btree ("key") WHERE "feature_flags"."business_id" is null;

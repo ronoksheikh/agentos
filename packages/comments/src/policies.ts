@@ -3,6 +3,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ulid } from "ulid";
 import { z } from "zod";
 import * as dbs from "@agentos/database";
+import { PostgresFeatureFlags } from "@agentos/feature-flags";
 import type { TrustedBusinessContext } from "@agentos/shared";
 
 const policyUpdateSchema = z.object({ enabled: z.boolean(), autoReply: z.boolean(), autoHide: z.boolean(), minimumConfidence: z.number().min(0.8).max(1), featureEnabled: z.boolean() });
@@ -21,9 +22,9 @@ export class PostgresCommentPolicyService {
     if (!connection) throw new Error("PAGE_CONNECTION_NOT_FOUND");
     const [policy, flag] = await Promise.all([
       this.db.select().from(dbs.commentPolicies).where(and(eq(dbs.commentPolicies.businessId, context.businessId), eq(dbs.commentPolicies.connectionId, connectionId))).limit(1),
-      this.db.select({ enabled: dbs.featureFlags.enabled }).from(dbs.featureFlags).where(and(eq(dbs.featureFlags.businessId, context.businessId), eq(dbs.featureFlags.key, "comment_ai"))).limit(1),
+      new PostgresFeatureFlags(this.db).effective(context.businessId, "comment_ai"),
     ]);
-    return { enabled: policy[0]?.enabled ?? false, autoReply: policy[0]?.autoReply ?? false, autoHide: policy[0]?.autoHide ?? false, minimumConfidence: policy[0]?.minimumConfidence ?? 0.85, allowDelete: false as const, version: policy[0]?.version ?? 0, featureEnabled: flag[0]?.enabled ?? false };
+    return { enabled: policy[0]?.enabled ?? false, autoReply: policy[0]?.autoReply ?? false, autoHide: policy[0]?.autoHide ?? false, minimumConfidence: policy[0]?.minimumConfidence ?? 0.85, allowDelete: false as const, version: policy[0]?.version ?? 0, featureEnabled: flag };
   }
   async update(context: TrustedBusinessContext, connectionId: string, untrusted: CommentPolicyUpdate) {
     const userId = this.authorize(context); const input = policyUpdateSchema.parse(untrusted);
