@@ -4,7 +4,8 @@ import type { ChannelRegistry, PresenceController } from "@agentos/channels";
 import type { RealtimeBus } from "@agentos/realtime";
 import { EventRouter, Phase5Processor, Phase5Queues, Phase5Store } from "@agentos/phase5";
 import { eq } from "drizzle-orm";
-import { effectIntents } from "@agentos/database";
+import { ulid } from "ulid";
+import { effectIntents, serviceHeartbeats } from "@agentos/database";
 
 export interface WorkerDependencies {
   db: NodePgDatabase; redisUrl: string; runtime: AgentRuntime; registry: ChannelRegistry; presence: PresenceController;
@@ -15,6 +16,8 @@ export interface WorkerDependencies {
 }
 
 export async function startPhase5Worker(deps: WorkerDependencies) {
+  const instanceId = ulid();
+  const heartbeat = () => deps.db.insert(serviceHeartbeats).values({ instanceId, service: "agentos-worker", lastSeenAt: new Date() }).onConflictDoUpdate({ target: serviceHeartbeats.instanceId, set: { lastSeenAt: new Date() } });
   const store = new Phase5Store(deps.db);
   const queues = new Phase5Queues(store, deps.redisUrl);
   const router = new EventRouter(store, deps.attachment, deps.browser, deps.comments);
@@ -22,11 +25,13 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
   await queues.recover();
   await deps.trialSweep?.();
   await store.scheduleDueGoals();
+  await heartbeat();
   const stopWorkers = queues.start((work, signal, lease) => processor.handle(work, signal, lease));
   await queues.pump();
   const reconciliationTimer = setInterval(() => { void store.db.select({ id: effectIntents.id, businessId: effectIntents.businessId }).from(effectIntents).where(eq(effectIntents.state, "UNKNOWN")).limit(50).then((effects) => Promise.all(effects.map((effect) => processor.reconcileUnknownEffect(effect.businessId, effect.id).catch(() => "UNKNOWN")))).catch(() => {}); }, 30_000);
   const trialTimer = setInterval(() => { void deps.trialSweep?.().catch(() => {}); }, 60_000);
-  return async () => { clearInterval(reconciliationTimer); clearInterval(trialTimer); await stopWorkers(); await queues.close(); };
+  const heartbeatTimer = setInterval(() => { void heartbeat().catch(() => { console.error("WORKER_HEARTBEAT_FAILED"); }); }, 20_000);
+  return async () => { clearInterval(reconciliationTimer); clearInterval(trialTimer); clearInterval(heartbeatTimer); await stopWorkers(); await queues.close(); await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, instanceId)); };
 }
 
 if (import.meta.main) {

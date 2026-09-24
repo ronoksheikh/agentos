@@ -66,6 +66,7 @@ try {
 
   await pause(170);
   const stop = await startPhase5Worker({ db, redisUrl, runtime, registry, presence });
+  assert.equal((await db.select().from(schema.serviceHeartbeats).where(eq(schema.serviceHeartbeats.service, "agentos-worker"))).length, 1);
   await until("one fake outbound action", async () => adapter.executed.length === 1);
   const effects = await db.select().from(schema.effectIntents).where(eq(schema.effectIntents.businessId, ids.businessA)); assert.equal(effects.length, 1); assert.equal(effects[0]!.state, "COMPLETED");
   assert.equal(adapter.executed.length, 1); assert.equal(adapter.executed[0]!.action.type, "SendMessage");
@@ -90,6 +91,7 @@ try {
   assert.equal(await reconciler.reconcileUnknownEffect(ids.businessA, ambiguous.id), "COMPLETED");
   assert.equal(adapter.executed.length, priorSends + 1, "reconciliation must not resend");
   await stop();
+  assert.equal((await db.select().from(schema.serviceHeartbeats).where(eq(schema.serviceHeartbeats.service, "agentos-worker"))).length, 0);
 
   // PostgreSQL order writes hold the conversation row and reject an older worker sequence.
   const durableOrders = new PostgresOrderRepository(db);
@@ -185,8 +187,8 @@ try {
   assert.ok((delivered.lifecycle as Record<string, string>)["message.delivered"]);
   const commentEvent = universalEventSchema.parse({ ...eventBase, id: ulid(), dedupeKey: ulid(), type: "comment.created", payload: { externalCommentId: "comment-1" } });
   await db.insert(schema.universalEvents).values({ id: commentEvent.id, businessId: ids.businessA, connectionId: site.id, channel: WEB_CHAT_CHANNEL, conversationId: ids.conversation, customerId: ids.customer, schemaVersion: "1.0", type: commentEvent.type, dedupeKey: commentEvent.dedupeKey, payload: commentEvent.payload, source: commentEvent.source, traceId: commentEvent.traceId, state: "PENDING", occurredAt: new Date(commentEvent.occurredAt), receivedAt: new Date(commentEvent.receivedAt) });
-  await router.process(commentEvent, new AbortController().signal);
-  assert.equal((await db.select().from(schema.universalEvents).where(eq(schema.universalEvents.id, commentEvent.id)))[0]!.state, "IGNORED");
+  await assert.rejects(() => router.process(commentEvent, new AbortController().signal), (error: unknown) => (error as { code?: string }).code === "COMMENT_PROCESSOR_UNAVAILABLE");
+  assert.equal((await db.select().from(schema.universalEvents).where(eq(schema.universalEvents.id, commentEvent.id)))[0]!.state, "PENDING");
   assert.equal((await operations.inspect({ userId, role: "SUPPORT" }, secondBusiness)).events.length, 0);
   await assert.rejects(() => store.getWork(secondBusiness, deadId), /WORK_NOT_FOUND/);
   await db.update(schema.rawInboundEvents).set({ retentionUntil: new Date(Date.now() - 1_000) }).where(eq(schema.rawInboundEvents.id, messages[0]!.rawEventSourceRef!));
