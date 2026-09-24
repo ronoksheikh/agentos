@@ -156,3 +156,5 @@ export class PostgresGoalContextReader {
   constructor(private readonly operations: PostgresPhase4Operations) {}
   list(context: TrustedBusinessContext) { return this.operations.listGoals(context); }
 }
+
+export { PostgresExpiredContentRetention } from "./retention";

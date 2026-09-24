@@ -13,6 +13,7 @@ export interface WorkerDependencies {
   attachment?: ConstructorParameters<typeof EventRouter>[1]; browser?: ConstructorParameters<typeof EventRouter>[2];
   comments?: ConstructorParameters<typeof EventRouter>[3];
   trialSweep?: () => Promise<number>;
+  retentionSweep?: () => Promise<void>;
 }
 
 export async function startPhase5Worker(deps: WorkerDependencies) {
@@ -24,14 +25,21 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
   const processor = new Phase5Processor({ store, runtime: deps.runtime, registry: deps.registry, presence: deps.presence, router, ...(deps.realtime ? { realtime: deps.realtime } : {}), ...(deps.capabilities ? { capabilities: deps.capabilities } : {}) });
   await queues.recover();
   await deps.trialSweep?.();
+  await deps.retentionSweep?.().catch(() => { console.error("RETENTION_SWEEP_FAILED"); });
   await store.scheduleDueGoals();
   await heartbeat();
   const stopWorkers = queues.start((work, signal, lease) => processor.handle(work, signal, lease));
   await queues.pump();
   const reconciliationTimer = setInterval(() => { void store.db.select({ id: effectIntents.id, businessId: effectIntents.businessId }).from(effectIntents).where(eq(effectIntents.state, "UNKNOWN")).limit(50).then((effects) => Promise.all(effects.map((effect) => processor.reconcileUnknownEffect(effect.businessId, effect.id).catch(() => "UNKNOWN")))).catch(() => {}); }, 30_000);
   const trialTimer = setInterval(() => { void deps.trialSweep?.().catch(() => {}); }, 60_000);
+  let retentionRunning = false;
+  const retentionTimer = setInterval(() => {
+    if (!deps.retentionSweep || retentionRunning) return;
+    retentionRunning = true;
+    void deps.retentionSweep().catch(() => { console.error("RETENTION_SWEEP_FAILED"); }).finally(() => { retentionRunning = false; });
+  }, 60_000);
   const heartbeatTimer = setInterval(() => { void heartbeat().catch(() => { console.error("WORKER_HEARTBEAT_FAILED"); }); }, 20_000);
-  return async () => { clearInterval(reconciliationTimer); clearInterval(trialTimer); clearInterval(heartbeatTimer); await stopWorkers(); await queues.close(); await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, instanceId)); };
+  return async () => { clearInterval(reconciliationTimer); clearInterval(trialTimer); clearInterval(retentionTimer); clearInterval(heartbeatTimer); await stopWorkers(); await queues.close(); await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, instanceId)); };
 }
 
 if (import.meta.main) {
