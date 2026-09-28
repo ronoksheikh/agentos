@@ -34,6 +34,9 @@ export async function saveRetentionPolicyAction(form: FormData) {
       browserHistoryDays: days(form, "browserHistoryDays"),
       commentTextDays: days(form, "commentTextDays"),
       customerContentDays: days(form, "customerContentDays"),
+      orderNotesDays: days(form, "orderNotesDays"),
+      resolvedGoalsDays: days(form, "resolvedGoalsDays"),
+      expiredAnnouncementsDays: days(form, "expiredAnnouncementsDays"),
       confirmScrub: String(form.get("confirmScrub") ?? ""),
     });
     revalidatePath("/retention");

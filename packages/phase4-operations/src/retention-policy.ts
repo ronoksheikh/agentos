@@ -9,11 +9,11 @@ export const businessRetentionPolicySchema = z.object({
   businessId: z.string().min(1), enabled: z.boolean(), revision: z.number().int().positive(),
   messagesDays: dayRule, eventPayloadDays: dayRule, traceDetailsDays: dayRule,
   realtimePayloadDays: dayRule, browserHistoryDays: dayRule, commentTextDays: dayRule,
-  customerContentDays: dayRule,
+  customerContentDays: dayRule, orderNotesDays: dayRule, resolvedGoalsDays: dayRule, expiredAnnouncementsDays: dayRule,
 });
 export type BusinessRetentionPolicy = z.infer<typeof businessRetentionPolicySchema>;
 type RetentionActor = { userId: string; grants: readonly string[]; allowedBusinessIds?: ReadonlySet<string> };
-const ruleFields = ["messagesDays", "eventPayloadDays", "traceDetailsDays", "realtimePayloadDays", "browserHistoryDays", "commentTextDays", "customerContentDays"] as const;
+const ruleFields = ["messagesDays", "eventPayloadDays", "traceDetailsDays", "realtimePayloadDays", "browserHistoryDays", "commentTextDays", "customerContentDays", "orderNotesDays", "resolvedGoalsDays", "expiredAnnouncementsDays"] as const;
 
 export class PostgresBusinessRetentionPolicies {
   constructor(private readonly database: NodePgDatabase) {}
@@ -24,7 +24,7 @@ export class PostgresBusinessRetentionPolicies {
   async get(actor: RetentionActor, businessId: string) {
     this.require(actor, businessId);
     const row = (await this.database.select().from(db.businessRetentionPolicies).where(eq(db.businessRetentionPolicies.businessId, businessId)).limit(1))[0];
-    return row ? businessRetentionPolicySchema.parse(row) : { businessId, enabled: false, revision: 0, messagesDays: null, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null, customerContentDays: null };
+    return row ? businessRetentionPolicySchema.parse(row) : { businessId, enabled: false, revision: 0, messagesDays: null, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null, customerContentDays: null, orderNotesDays: null, resolvedGoalsDays: null, expiredAnnouncementsDays: null };
   }
   async set(actor: RetentionActor, input: Omit<BusinessRetentionPolicy, "revision"> & { expectedRevision: number; confirmScrub?: string }) {
     this.require(actor, input.businessId);
@@ -57,6 +57,7 @@ export class PostgresBusinessContentRetention {
       const categories = [
         ["messages", policy.messagesDays], ["eventPayloads", policy.eventPayloadDays], ["traceDetails", policy.traceDetailsDays],
         ["realtimePayloads", policy.realtimePayloadDays], ["browserHistory", policy.browserHistoryDays], ["commentText", policy.commentTextDays], ["customerContent", policy.customerContentDays],
+        ["orderNotes", policy.orderNotesDays], ["resolvedGoals", policy.resolvedGoalsDays], ["expiredAnnouncements", policy.expiredAnnouncementsDays],
       ] as const;
       for (const [category, days] of categories) {
         if (days === null) continue;
@@ -99,6 +100,15 @@ export class PostgresBusinessContentRetention {
             const decisions = comments.length ? await this.database.update(db.commentDecisions).set({ classification: { retentionRedacted: true } }).where(and(eq(db.commentDecisions.businessId, policy.businessId), inArray(db.commentDecisions.commentId, comments.map((row) => row.id)), sql`${db.commentDecisions.classification}->>'retentionRedacted' is distinct from 'true'`)).returning({ id: db.commentDecisions.id }) : [];
             count = comments.length + decisions.length;
           }
+        } else if (category === "orderNotes") {
+          const ids = await this.database.select({ id: db.orderNotes.id }).from(db.orderNotes).where(and(eq(db.orderNotes.businessId, policy.businessId), lte(db.orderNotes.createdAt, cutoff), ne(db.orderNotes.content, "[retention redacted]"))).orderBy(db.orderNotes.createdAt).limit(limit);
+          if (ids.length) count = (await this.database.update(db.orderNotes).set({ content: "[retention redacted]" }).where(and(eq(db.orderNotes.businessId, policy.businessId), inArray(db.orderNotes.id, ids.map((row) => row.id)), ne(db.orderNotes.content, "[retention redacted]"))).returning({ id: db.orderNotes.id })).length;
+        } else if (category === "resolvedGoals") {
+          const ids = await this.database.select({ id: db.pendingGoals.id }).from(db.pendingGoals).where(and(eq(db.pendingGoals.businessId, policy.businessId), lte(db.pendingGoals.updatedAt, cutoff), ne(db.pendingGoals.state, "PENDING"), sql`(${db.pendingGoals.description} <> '[retention redacted]' or ${db.pendingGoals.trigger}->>'retentionRedacted' is distinct from 'true')`)).orderBy(db.pendingGoals.updatedAt).limit(limit);
+          if (ids.length) count = (await this.database.update(db.pendingGoals).set({ description: "[retention redacted]", trigger: { retentionRedacted: true }, updatedAt: now }).where(and(eq(db.pendingGoals.businessId, policy.businessId), inArray(db.pendingGoals.id, ids.map((row) => row.id)), ne(db.pendingGoals.state, "PENDING"))).returning({ id: db.pendingGoals.id })).length;
+        } else if (category === "expiredAnnouncements") {
+          const ids = await this.database.select({ id: db.businessAnnouncements.id }).from(db.businessAnnouncements).where(and(eq(db.businessAnnouncements.businessId, policy.businessId), lte(db.businessAnnouncements.expiresAt, cutoff), ne(db.businessAnnouncements.content, "[retention redacted]"))).orderBy(db.businessAnnouncements.expiresAt).limit(limit);
+          if (ids.length) count = (await this.database.update(db.businessAnnouncements).set({ content: "[retention redacted]", channels: [], agentIds: [], active: false, updatedAt: now }).where(and(eq(db.businessAnnouncements.businessId, policy.businessId), inArray(db.businessAnnouncements.id, ids.map((row) => row.id)), lte(db.businessAnnouncements.expiresAt, cutoff), ne(db.businessAnnouncements.content, "[retention redacted]"))).returning({ id: db.businessAnnouncements.id })).length;
         } else {
           const [customers, identities, links, memories, summaries, pins, notes] = await Promise.all([
             this.database.select({ id: db.customers.id }).from(db.customers).where(and(eq(db.customers.businessId, policy.businessId), lte(db.customers.updatedAt, cutoff), sql`(${db.customers.displayName} is not null or cardinality(${db.customers.tags}) > 0)`)).orderBy(db.customers.updatedAt).limit(limit),
