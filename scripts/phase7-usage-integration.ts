@@ -5,6 +5,7 @@ import { ulid } from "ulid";
 import * as db from "@agentos/database";
 import { readAgencyUsage } from "../apps/admin/lib/usage";
 import { readAgencyOverview } from "../apps/admin/lib/overview";
+import { readAgencyBrowserRuns, readAgencyHandoffs, readAgencyIntegrations, readAgencyRuns } from "../apps/admin/lib/agency-operations";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString || !new URL(connectionString).pathname.match(/^\/agentos_phase7_usage_[a-z0-9_]+$/i)) throw new Error("USAGE_INTEGRATION_REQUIRES_DISPOSABLE_DATABASE");
@@ -27,6 +28,8 @@ try {
   await database.insert(db.toolCalls).values({ id: ulid(), businessId, runId, traceId: ulid(), toolName: "integration_tool", status: "SUCCEEDED", safeInput: {}, occurredAt: new Date() });
   await database.insert(db.browserSessions).values({ id: sessionId, businessId, runId, ownerId: userId, profileId: "usage-drill", safeUrl: "https://example.invalid/", status: "CLOSED", expiresAt: new Date(Date.now() + 60_000) });
   await database.insert(db.browserRuns).values({ id: ulid(), businessId, sessionId, runId, action: "extract", status: "COMPLETED", occurredAt: new Date() });
+  await database.insert(db.channelConnections).values({ id: ulid(), businessId, channel: "facebook_messenger", externalPageId: "test-page-id", agentId, setupMethod: "manual" });
+  await database.insert(db.websiteSites).values({ id: ulid(), businessId, agentId, publicKey: ulid(), allowedOrigins: ["https://shop.example.invalid"] });
 
   const usage = await readAgencyUsage(database, new Date(Date.now() - 30 * 24 * 60 * 60_000));
   assert.equal(Number(usage.totals.runs), 2);
@@ -39,5 +42,10 @@ try {
   assert.ok(usage.browserRows.some((row) => row.business === businessName && row.action === "extract" && Number(row.runs) === 1));
   const overview = await readAgencyOverview(database);
   assert.equal(overview.businesses, 1); assert.equal(overview.unread, 1); assert.equal(overview.handoffs, 1); assert.equal(overview.failedRuns, 1);
-  console.log("Phase 7 agency analytics: usage by business/agent/model/run/tool/browser and live overview counts passed");
+  const runRows = await readAgencyRuns(database); const browserActivity = await readAgencyBrowserRuns(database); const handoffRows = await readAgencyHandoffs(database); const integrations = await readAgencyIntegrations(database);
+  assert.ok(runRows.some((row) => row.id === runId && row.business === businessName && row.agent === agentName));
+  assert.ok(browserActivity.some((row) => row.business === businessName && row.action === "extract"));
+  assert.ok(handoffRows.some((row) => row.business === businessName && row.conversationId === conversationId));
+  assert.equal(integrations.connections[0]?.business, businessName); assert.equal(integrations.sites[0]?.originCount, 1);
+  console.log("Phase 7 agency analytics: live overview, usage, run, browser, handoff, and integration views passed");
 } finally { await pool.end(); }

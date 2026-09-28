@@ -4,7 +4,7 @@ import Link from "next/link";
 const pageCopy: Record<string, { title: string; description: string }> = {
   businesses: { title: "Businesses", description: "Onboarding, structured profiles, assignments, and operational announcements." },
   agents: { title: "Agents & versions", description: "Draft safely, test explicit snapshots, publish atomically, and roll back." },
-  "agent-playground": { title: "Agent Playground", description: "Disposable simulations through the canonical runtime. External effects stay blocked." },
+  "agent-playground": { title: "Agent Playground", description: "Controlled model simulations are unavailable until persistent test isolation and action suppression are implemented." },
   tools: { title: "Tools", description: "Review tool safety classes, grants, and business policy outcomes." },
   knowledge: { title: "Knowledge", description: "Inspect source lifecycle, attribution, errors, and versions within a business workspace." },
   orders: { title: "Orders", description: "Inspect confirmed conversational orders, immutable snapshots, and source provenance." },
