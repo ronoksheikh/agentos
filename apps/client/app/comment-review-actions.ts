@@ -42,3 +42,17 @@ export async function performClientManualCommentAction(form: FormData) {
   } catch (error) { notice = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message.toLowerCase().replaceAll("_", "-") : "comment-action-failed"; }
   redirect(`/comment-analytics?business=${encodeURIComponent(businessId)}&notice=${notice}`);
 }
+
+export async function mapClientCommentProductSourceAction(form: FormData) {
+  const businessId = String(form.get("businessId") ?? ""); let notice = "product-mapping-saved";
+  try {
+    ulidSchema.parse(businessId);
+    const postId = ulidSchema.parse(String(form.get("postId") ?? ""));
+    const sourceValue = String(form.get("sourceId") ?? "");
+    const access = await requireClientPage("channel.manage", businessId);
+    const context = createTrustedBusinessContext({ businessId: access.membership.businessId, principal: { kind: "user", userId: access.session.user.id, sessionId: access.session.session.id }, source: "authenticated_request", traceId: ulid(), capabilityGrants: businessCapabilities(businessRoleSchema.parse(access.membership.role), access.membership.capabilities) });
+    await analytics.mapPostProductSource(context, postId, sourceValue || null);
+    revalidatePath("/comment-analytics");
+  } catch (error) { notice = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message.toLowerCase().replaceAll("_", "-") : "product-mapping-failed"; }
+  redirect(`/comment-analytics?business=${encodeURIComponent(businessId)}&notice=${notice}`);
+}

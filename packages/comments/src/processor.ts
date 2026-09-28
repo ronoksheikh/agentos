@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ulid } from "ulid";
 import * as dbs from "@agentos/database";
@@ -48,13 +48,14 @@ export class PostgresCommentProcessor {
   private async persist(event: CommentEvent, connection: typeof dbs.channelConnections.$inferSelect, loaded: LoadedComment) {
     return this.db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${connection.id}:${event.payload.externalCommentId}`}, 0))`);
-      const existing = (await tx.select().from(dbs.facebookComments).where(and(eq(dbs.facebookComments.businessId, event.businessId), eq(dbs.facebookComments.connectionId, connection.id), eq(dbs.facebookComments.externalCommentId, event.payload.externalCommentId))).limit(1))[0];
-      if (existing) return existing;
       let postId: string | null = null;
       if (loaded.postId) {
         const inserted = await tx.insert(dbs.facebookPosts).values({ id: ulid(), businessId: event.businessId, connectionId: connection.id, externalPostId: loaded.postId, text: loaded.postText, fetchedAt: loaded.postScopeVerified ? new Date() : null }).onConflictDoNothing().returning({ id: dbs.facebookPosts.id });
         postId = inserted[0]?.id ?? (await tx.select({ id: dbs.facebookPosts.id }).from(dbs.facebookPosts).where(and(eq(dbs.facebookPosts.businessId, event.businessId), eq(dbs.facebookPosts.connectionId, connection.id), eq(dbs.facebookPosts.externalPostId, loaded.postId))).limit(1))[0]?.id ?? null;
+        if (!inserted.length && loaded.postScopeVerified) await tx.update(dbs.facebookPosts).set({ text: loaded.postText, fetchedAt: new Date(), updatedAt: new Date() }).where(and(eq(dbs.facebookPosts.businessId, event.businessId), eq(dbs.facebookPosts.connectionId, connection.id), eq(dbs.facebookPosts.externalPostId, loaded.postId)));
       }
+      const existing = (await tx.select().from(dbs.facebookComments).where(and(eq(dbs.facebookComments.businessId, event.businessId), eq(dbs.facebookComments.connectionId, connection.id), eq(dbs.facebookComments.externalCommentId, event.payload.externalCommentId))).limit(1))[0];
+      if (existing) return existing;
       let customerId: string;
       if (loaded.authorId) {
         const externalId = `${connection.id}:${loaded.authorId}`;
@@ -69,6 +70,15 @@ export class PostgresCommentProcessor {
       const id = ulid(); await tx.insert(dbs.facebookComments).values({ id, businessId: event.businessId, connectionId: connection.id, postId, externalCommentId: event.payload.externalCommentId, externalParentId: loaded.parentId, authorExternalId: loaded.authorId, customerId, conversationId, text: loaded.text || null, canComment: loaded.canComment, canHide: loaded.canHide, isHidden: loaded.isHidden, sourceEventId: event.id });
       return (await tx.select().from(dbs.facebookComments).where(eq(dbs.facebookComments.id, id)).limit(1))[0]!;
     });
+  }
+  private async mappedProductText(businessId: string, comment: typeof dbs.facebookComments.$inferSelect) {
+    if (!comment.postId) return null;
+    const post = (await this.db.select({ productRef: dbs.facebookPosts.productRef, fetchedAt: dbs.facebookPosts.fetchedAt }).from(dbs.facebookPosts).where(and(eq(dbs.facebookPosts.id, comment.postId), eq(dbs.facebookPosts.businessId, businessId))).limit(1))[0];
+    if (!post?.productRef || !post.fetchedAt) return null;
+    const [sourceId, versionText, ...extra] = post.productRef.split(":"); const version = Number(versionText);
+    if (extra.length || !sourceId || !Number.isSafeInteger(version) || version < 1) return null;
+    const chunks = await this.db.select({ content: dbs.knowledgeChunks.content }).from(dbs.knowledgeSources).innerJoin(dbs.knowledgeChunks, and(eq(dbs.knowledgeChunks.sourceId, dbs.knowledgeSources.id), eq(dbs.knowledgeChunks.businessId, businessId), eq(dbs.knowledgeChunks.sourceVersion, dbs.knowledgeSources.version))).where(and(eq(dbs.knowledgeSources.id, sourceId), eq(dbs.knowledgeSources.version, version), eq(dbs.knowledgeSources.businessId, businessId), eq(dbs.knowledgeSources.type, "PRODUCT_CATALOG"), eq(dbs.knowledgeSources.status, "READY"), eq(dbs.knowledgeSources.enabled, true), isNull(dbs.knowledgeSources.deletedAt))).limit(2);
+    return chunks.length === 1 ? chunks[0]!.content.slice(0, 2_000) : null;
   }
   private async notifyReview(event: CommentEvent, commentId: string, decisionId: string, reason: string, conversationId: string | null) {
     const members = await this.db.select({ userId: dbs.businessMemberships.userId }).from(dbs.businessMemberships).where(eq(dbs.businessMemberships.businessId, event.businessId));
@@ -89,7 +99,7 @@ export class PostgresCommentProcessor {
     if (signal.aborted) throw Object.assign(new Error("Cancelled"), { code: "CANCELLED" });
     const connection = (await this.db.select().from(dbs.channelConnections).where(and(eq(dbs.channelConnections.id, event.connectionId), eq(dbs.channelConnections.businessId, event.businessId), eq(dbs.channelConnections.channel, "facebook_messenger"))).limit(1))[0];
     if (!connection) throw new Error("COMMENT_CONNECTION_NOT_FOUND");
-    const loaded = await this.load(event, connection); const comment = await this.persist(event, connection, loaded);
+    const loaded = await this.load(event, connection); const comment = await this.persist(event, connection, loaded); const productText = await this.mappedProductText(event.businessId, comment);
     const [policy, flag, conversation, business] = await Promise.all([
       this.db.select().from(dbs.commentPolicies).where(and(eq(dbs.commentPolicies.businessId, event.businessId), eq(dbs.commentPolicies.connectionId, connection.id))).limit(1),
       new PostgresFeatureFlags(this.db).effective(event.businessId, "comment_ai"),
@@ -97,7 +107,7 @@ export class PostgresCommentProcessor {
       this.db.select({ state: dbs.businesses.state, disabled: dbs.businesses.disabled, trialStartedAt: dbs.businesses.trialStartedAt, trialEndsAt: dbs.businesses.trialEndsAt, trialExpiryBehavior: dbs.businesses.trialExpiryBehavior }).from(dbs.businesses).where(eq(dbs.businesses.id, event.businessId)).limit(1),
     ]);
     const configured = policy[0]; const capabilities = connection.capabilities && typeof connection.capabilities === "object" && !Array.isArray(connection.capabilities) ? connection.capabilities as Record<string, unknown> : {};
-    const classification = await this.classifier.classify({ text: loaded.text, postText: loaded.postText, parentText: loaded.parentText, signal });
+    const classification = await this.classifier.classify({ text: loaded.text, postText: loaded.postText, parentText: loaded.parentText, productText, signal });
     const decided = this.policy.evaluate(classification, { enabled: configured?.enabled ?? false, autoReply: configured?.autoReply ?? false, autoHide: configured?.autoHide ?? false, allowDelete: configured?.allowDelete ?? false, minimumConfidence: configured?.minimumConfidence ?? 0.85, featureEnabled: flag, businessEligible: Boolean(business[0] && businessAutomationAllowed(business[0])), channelConnected: connection.state === "CONNECTED" && !connection.paused, verifiedRead: capabilities.commentReadVerified === true, verifiedReply: capabilities.commentReplyVerified === true, verifiedHide: capabilities.commentHideVerified === true, commentCanReply: loaded.canComment, commentCanHide: loaded.canHide, commentHidden: loaded.isHidden, postScopeVerified: loaded.postScopeVerified, verifiedExternalAuthor: Boolean(loaded.authorId && loaded.authorId !== connection.externalPageId), ...(conversation[0] ? { ownership: conversation[0].ownership } : {}) });
     const key = `comment:${connection.id}:${comment.externalCommentId}:policy:${configured?.version ?? 1}`;
     const id = ulid(); const inserted = await this.db.insert(dbs.commentDecisions).values({ id, businessId: event.businessId, commentId: comment.id, sourceEventId: event.id, classification, policyVersion: configured?.version ?? 1, outcome: decided.outcome, safeReason: loaded.readCode !== "VERIFIED" ? loaded.readCode : decided.safeReason, actionStatus: "PENDING", idempotencyKey: key, actorId: "comment-processor" }).onConflictDoNothing().returning({ id: dbs.commentDecisions.id });

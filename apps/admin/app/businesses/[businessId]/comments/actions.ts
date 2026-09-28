@@ -31,3 +31,15 @@ export async function performAgencyManualCommentAction(form: FormData) {
   } catch (error) { notice = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message.toLowerCase().replaceAll("_", "-") : "comment-action-failed"; }
   redirect(`/businesses/${encodeURIComponent(businessId)}/comments?notice=${notice}`);
 }
+
+export async function mapAgencyCommentProductSourceAction(form: FormData) {
+  const businessId = String(form.get("businessId") ?? ""); let notice = "product-mapping-saved";
+  try {
+    const context = await agencyMetaContext(businessId);
+    const postId = ulidSchema.parse(String(form.get("postId") ?? ""));
+    const sourceValue = String(form.get("sourceId") ?? "");
+    await analytics.mapPostProductSource(context, postId, sourceValue || null);
+    revalidatePath(`/businesses/${businessId}/comments`);
+  } catch (error) { notice = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message.toLowerCase().replaceAll("_", "-") : "product-mapping-failed"; }
+  redirect(`/businesses/${encodeURIComponent(businessId)}/comments?notice=${notice}`);
+}

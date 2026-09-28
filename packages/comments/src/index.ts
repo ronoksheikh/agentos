@@ -10,11 +10,11 @@ export const commentClassificationSchema = z.object({
   signals: z.array(z.string().min(1).max(80)).max(10),
 });
 export type CommentClassification = z.infer<typeof commentClassificationSchema>;
-export interface CommentClassifier { classify(input: { text: string; postText?: string | null; parentText?: string | null; signal?: AbortSignal }): Promise<CommentClassification> }
+export interface CommentClassifier { classify(input: { text: string; postText?: string | null; parentText?: string | null; productText?: string | null; signal?: AbortSignal }): Promise<CommentClassification> }
 
 /** Conservative deterministic classifier. No raw text is placed in signals or audit metadata. */
 export class RuleCommentClassifier implements CommentClassifier {
-  async classify(input: { text: string; signal?: AbortSignal }): Promise<CommentClassification> {
+  async classify(input: { text: string; productText?: string | null; signal?: AbortSignal }): Promise<CommentClassification> {
     if (input.signal?.aborted) throw new Error("CANCELLED");
     const text = input.text.trim().slice(0, 10_000).toLowerCase();
     const result = (category: CommentClassification["category"], confidence: number, requiresReply: boolean, requiresHuman: boolean, moderationRecommendation: CommentClassification["moderationRecommendation"], signal: string) => commentClassificationSchema.parse({ schemaVersion: "1.0", category, confidence, requiresReply, requiresHuman, moderationRecommendation, signals: [signal] });
