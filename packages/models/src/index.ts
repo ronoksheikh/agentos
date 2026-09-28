@@ -29,4 +29,5 @@ export class FakeModelProvider implements ModelProvider {
   }
 }
 export { OpenAIResponsesProvider, OpenAIVisionProvider, createOpenAIClient, verifyOpenAIEndpoint, type OpenAIProviderConfig } from "./openai";
+export { OpenAICommentClassifier } from "./comment-classifier";
 export { CircuitBreakerModelProvider, type ModelCircuitSnapshot, type ModelCircuitState } from "./circuit-breaker";

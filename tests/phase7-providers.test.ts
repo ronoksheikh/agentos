@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { CircuitBreakerModelProvider, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint, type ModelProvider } from "@agentos/models";
+import { CircuitBreakerModelProvider, OpenAICommentClassifier, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint, type ModelProvider } from "@agentos/models";
 import { ElevenLabsHttpClient } from "@agentos/attachments";
 import { createAgentFixture } from "./helpers";
 
@@ -9,6 +9,18 @@ const fakeFetch = (impl: (input: Parameters<typeof fetch>[0], init?: Parameters<
 const request = () => ({ runId: "01TEST", version: createAgentFixture({ models: { primary: { provider: "openai", model: "primary" } } }).version, context: { items: [], provenance: [], estimatedTokens: 0, truncated: false }, tools: [], safeToolResults: [], maxOutputTokens: 100, signal: new AbortController().signal });
 
 describe("Phase 7 provider configuration", () => {
+  it("uses model labels for review only and falls back to deterministic rules on endpoint errors", async () => {
+    let requestBody = "";
+    const classifier = new OpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async (_input, init) => { requestBody = String(init?.body); return reply([text('{"category":"price_question","confidence":0.97}')]); }) }, "classifier-v1");
+    const result = await classifier.classify({ text: "What is the price?", productText: "Blue shirt" });
+    expect(result).toEqual({ schemaVersion: "1.0", category: "price_question", confidence: 0.97, requiresReply: false, requiresHuman: true, moderationRecommendation: "review", signals: ["model_label_review_only"] });
+    expect(requestBody).toContain("Blue shirt");
+    expect(requestBody).toContain('"store":false');
+
+    const fallback = new OpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async () => new Response("unavailable", { status: 503 })) }, "classifier-v1");
+    expect(await fallback.classify({ text: "What is the price?" })).toMatchObject({ category: "price_question", requiresReply: true, signals: ["price_question"] });
+  });
+
   it("opens after retryable provider failures, fails fast, and recovers through one half-open probe", async () => {
     let now = 10_000; let calls = 0;
     const inner: ModelProvider = { async generate() { calls++; return calls <= 2
