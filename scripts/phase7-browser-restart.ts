@@ -5,10 +5,18 @@ import { RemoteBrowserAdapter, type BrowserPolicy } from "@agentos/web";
 const endpoint = process.env.BROWSER_WORKER_URL ?? "http://127.0.0.1:4317";
 const token = process.env.BROWSER_WORKER_TOKEN ?? "";
 const adapter = new RemoteBrowserAdapter(endpoint, token);
+async function waitForReady() {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    try { if ((await fetch(new URL("/health", endpoint), { signal: AbortSignal.timeout(1000) })).ok) return; } catch {}
+    await Bun.sleep(500);
+  }
+  throw new Error("BROWSER_WORKER_NOT_READY");
+}
 const policy: BrowserPolicy = { allowedDomains: ["browser.test"], deniedDomains: [], timeoutMs: 30_000, maxActions: 20, maxEgress: 20, allowDownloads: false, allowUploads: false };
 const signal = new AbortController().signal;
 const businessA = ulid(), businessB = ulid(), sessionA = ulid(), sessionB = ulid();
 
+await waitForReady();
 await adapter.open(sessionA, "https://browser.test/", signal, businessA, policy);
 await adapter.open(sessionB, "https://browser.test/", signal, businessB, policy);
 await adapter.type(sessionA, "#name", "Tenant A", signal);
@@ -20,13 +28,7 @@ assert.ok((await adapter.screenshot(sessionB, signal)).objectRef.startsWith(`${b
 
 const restart = Bun.spawn(["docker", "compose", "-f", "docker-compose.browser.yml", "-f", "tests/browser.compose.yml", "restart", "browser-worker"], { stdout: "inherit", stderr: "inherit" });
 assert.equal(await restart.exited, 0);
-let ready = false;
-for (let attempt = 0; attempt < 40; attempt++) {
-  try { ready = (await fetch(new URL("/health", endpoint), { signal: AbortSignal.timeout(1000) })).ok; } catch { ready = false; }
-  if (ready) break;
-  await Bun.sleep(250);
-}
-assert.ok(ready, "Browser Use worker did not recover after restart");
+await waitForReady();
 await assert.rejects(adapter.extract(sessionA, "#result", signal));
 await assert.rejects(adapter.extract(sessionB, "#result", signal));
 

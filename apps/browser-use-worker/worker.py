@@ -318,7 +318,8 @@ async def handle(request: web.Request) -> web.Response:
         return web.json_response({"code": "BROWSER_TIMEOUT"}, status=504)
     except asyncio.CancelledError:
         return web.json_response({"code": "BROWSER_CANCELLED"}, status=503)
-    except Exception:
+    except Exception as error:
+        logging.error("browser request failed (%s)", type(error).__name__)
         return web.json_response({"code": "BROWSER_FAILED"}, status=503)
 
 

@@ -7,6 +7,14 @@ import { createTrustedBusinessContext } from "@agentos/shared";
 const endpoint = process.env.BROWSER_WORKER_URL ?? "http://localhost:4317";
 const token = process.env.BROWSER_WORKER_TOKEN ?? "";
 const adapter = new RemoteBrowserAdapter(endpoint, token);
+async function waitForReady() {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    try { if ((await fetch(new URL("/health", endpoint), { signal: AbortSignal.timeout(1000) })).ok) return; } catch {}
+    await Bun.sleep(500);
+  }
+  throw new Error("BROWSER_WORKER_NOT_READY");
+}
+await waitForReady();
 const businessId = ulid(); const site = "https://browser.test/";
 const policy: BrowserPolicy = { allowedDomains: ["browser.test"], deniedDomains: [], timeoutMs: 15_000, maxActions: 20, maxEgress: 20, allowDownloads: false, allowUploads: false };
 const signal = new AbortController().signal;
