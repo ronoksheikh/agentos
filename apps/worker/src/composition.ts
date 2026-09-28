@@ -18,6 +18,7 @@ import { createTrustedBusinessContext } from "@agentos/shared";
 import { PostgresWebChatService, WebChatAdapter } from "@agentos/website-sdk";
 import { PostgresTrialService } from "@agentos/trial";
 import { PostgresFeatureFlags, runtimeCapabilityGrants } from "@agentos/feature-flags";
+import { FeatureFlaggedContextSource } from "./feature-flagged-context";
 import { ulid } from "ulid";
 import type { WorkerDependencies } from "./index";
 
@@ -36,6 +37,7 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
   registry.register(new WebChatAdapter(new PostgresWebChatService(db, required("VISITOR_SESSION_SECRET"))));
   const presence = new RegistryPresenceController(registry);
   const realtime = new PostgresRealtimeBus(db);
+  const featureFlags = new PostgresFeatureFlags(db);
   const parser = new DefaultKnowledgeParser();
   const openaiConfig = { apiKey: required("OPENAI_API_KEY"), ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}), ...(process.env.OPENAI_TIMEOUT_MS ? { timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS) } : {}), ...(process.env.OPENAI_FALLBACK_MODEL ? { fallbackModel: process.env.OPENAI_FALLBACK_MODEL } : {}) };
   const visionModel = await verifyOpenAIEndpoint(openaiConfig, required("OPENAI_MODEL"), process.env.OPENAI_VISION_MODEL);
@@ -62,14 +64,13 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
   }
   const runtime = new AgentRuntime({
     versions: new AgentVersionService(new PostgresAgentVersionRepository(db), new PostgresAgentEvaluationRepository(db)),
-    contextEngine: new LayeredContextEngine(new PostgresRuntimeContextSource(db)),
+    contextEngine: new LayeredContextEngine(new FeatureFlaggedContextSource(new PostgresRuntimeContextSource(db), featureFlags)),
     models: modelProvider,
     tools,
     actions: new DeferredChannelActionExecutor(new PostgresRuntimeActionRepository(db), new PostgresRuntimeDomainActions(db)),
     traces: new PostgresRuntimeTraceRepository(db), realtime, presence,
   });
   const commentProcessor = new PostgresCommentProcessor(db, api, vault, realtime, new RuleCommentClassifier(), new PostgresCommentWriteExecutor(db, runtime, registry));
-  const featureFlags = new PostgresFeatureFlags(db);
   const expiredContentRetention = new PostgresExpiredContentRetention(db, storage); const businessContentRetention = new PostgresBusinessContentRetention(db);
   return { db, redisUrl, runtime, registry, presence, realtime, attachment, comments: (event, signal) => commentProcessor.process(event, signal).then(() => {}), trialSweep: () => new PostgresTrialService(db).expireDue(), retentionSweep: async () => { await expiredContentRetention.sweep(); await businessContentRetention.sweep(); }, providerCircuitState: () => modelProvider.status().state, capabilities: (businessId) => runtimeCapabilityGrants(featureFlags, businessId, Boolean(browserUrl)) };
 }
