@@ -30,7 +30,7 @@ Notification producers use the existing notification table; stale deadlines use 
 
 ## Validation evidence
 
-Latest repository checks after the classifier startup-probe and fallback-injection changes:
+Latest repository checks after the agency usage and overview changes:
 
 - `bun run check` — passed, 90 tests and 502 assertions after adding classifier startup-probe coverage.
 - `bun run admin:build` — passed.
@@ -69,4 +69,4 @@ Other explicit contracts, definitions, and operating procedures are in `docs/pha
 
 ## Phase 7 commits
 
-The Phase 7 implementation commits from Browser Use cutover through the latest analytics reporting are recorded in `git log`; the range includes `ffd4360` (Browser Use cutover), `340f438` (production Website Chat), `f5cdab9` (comment processing), provider and operations milestones through `08b523d`, notification/context slices through `96c2a2d`, manual comment actions `f2ac7f0`, upstream Browser Use guidance `fd25d58`, product mapping `4c65d63`, review-only classifier `925a9af`, classifier startup probe `839570e`, fallback injection `7005e35`, and agency usage reporting `6f5a3b2`. The overview follow-up is documented in later commits. No push, PR, or deployment was performed.
+The Phase 7 implementation commits from Browser Use cutover through the latest analytics reporting are recorded in `git log`; recent slices include manual comment actions `f2ac7f0`, upstream Browser Use guidance `fd25d58`, product mapping `4c65d63`, review-only classifier `925a9af`, classifier startup probe `839570e`, fallback injection `7005e35`, agency usage reporting `6f5a3b2`, its query failure state `f1c7359`, usage documentation `5a03af1`, and live agency overview counts `97abcc3`. Earlier Browser Use, Website Chat, comments, provider, and operations milestones include `ffd4360`, `340f438`, `f5cdab9`, and commits through `96c2a2d`. No push, PR, or deployment was performed.
