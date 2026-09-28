@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { CircuitBreakerModelProvider, OpenAICommentClassifier, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint, type ModelProvider } from "@agentos/models";
+import { CircuitBreakerModelProvider, OpenAICommentClassifier, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAICommentClassifier, verifyOpenAIEndpoint, type ModelProvider } from "@agentos/models";
 import { ElevenLabsHttpClient } from "@agentos/attachments";
 import { createAgentFixture } from "./helpers";
 
@@ -19,6 +19,14 @@ describe("Phase 7 provider configuration", () => {
 
     const fallback = new OpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async () => new Response("unavailable", { status: 503 })) }, "classifier-v1");
     expect(await fallback.classify({ text: "What is the price?" })).toMatchObject({ category: "price_question", requiresReply: true, signals: ["price_question"] });
+  });
+
+  it("probes the selected classifier model for structured category output", async () => {
+    let seenModel = "";
+    const fetcher = fakeFetch(async (_input, init) => { seenModel = (JSON.parse(String(init?.body)) as { model: string }).model; return reply([text('{"category":"normal","confidence":0.5}')]); });
+    await verifyOpenAICommentClassifier({ apiKey: "test-key", fetch: fetcher }, "comment-model");
+    expect(seenModel).toBe("comment-model");
+    await expect(verifyOpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async () => reply([text('{"category":"unknown","confidence":0.5}')])) }, "comment-model")).rejects.toThrow("CLASSIFIER_CAPABILITY_UNAVAILABLE");
   });
 
   it("opens after retryable provider failures, fails fast, and recovers through one half-open probe", async () => {

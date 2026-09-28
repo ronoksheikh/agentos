@@ -55,3 +55,23 @@ export class OpenAICommentClassifier implements CommentClassifier {
     }
   }
 }
+
+/** Fail startup when the configured classifier model cannot return the required JSON shape. */
+export async function verifyOpenAICommentClassifier(config: OpenAIProviderConfig, model: string): Promise<void> {
+  if (!model.trim() || model.length > 200) throw new Error("CLASSIFIER_MODEL_INVALID");
+  const client = createOpenAIClient(config);
+  try {
+    const response = await client.responses.create({
+      model,
+      store: false,
+      max_output_tokens: 80,
+      instructions: "Classify the synthetic test input. Return only category and confidence as JSON.",
+      input: "Synthetic probe: a customer asks what the price is.",
+      text: { format: { type: "json_object" } },
+    });
+    if (response.status !== "completed") throw new Error("CLASSIFIER_PROBE_FAILED");
+    modelClassification.parse(JSON.parse(response.output_text));
+  } catch {
+    throw new Error("CLASSIFIER_CAPABILITY_UNAVAILABLE");
+  }
+}

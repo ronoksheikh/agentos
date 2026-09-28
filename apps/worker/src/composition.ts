@@ -8,7 +8,7 @@ import { FacebookMessengerAdapter, GraphMetaApi, InMemoryChannelRegistry, Messen
 import { LayeredContextEngine } from "@agentos/context";
 import { PostgresCommentProcessor, PostgresCommentWriteExecutor, RuleCommentClassifier } from "@agentos/comments";
 import { DefaultKnowledgeParser } from "@agentos/knowledge";
-import { CircuitBreakerModelProvider, OpenAICommentClassifier, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint } from "@agentos/models";
+import { CircuitBreakerModelProvider, OpenAICommentClassifier, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAICommentClassifier, verifyOpenAIEndpoint } from "@agentos/models";
 import { PostgresAgentEvaluationRepository, PostgresAgentVersionRepository, PostgresRealtimeBus, PostgresRuntimeActionRepository, PostgresRuntimeContextSource, PostgresRuntimeDomainActions, PostgresRuntimeTraceRepository } from "@agentos/phase6";
 import { PostgresAttachmentRepository, PostgresBrowserRepository, PostgresBusinessContentRetention, PostgresExpiredContentRetention } from "@agentos/phase4-operations";
 import { ToolRegistry, type ToolExecutionContext } from "@agentos/tools";
@@ -41,6 +41,7 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
   const parser = new DefaultKnowledgeParser();
   const openaiConfig = { apiKey: required("OPENAI_API_KEY"), ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}), ...(process.env.OPENAI_TIMEOUT_MS ? { timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS) } : {}), ...(process.env.OPENAI_FALLBACK_MODEL ? { fallbackModel: process.env.OPENAI_FALLBACK_MODEL } : {}) };
   const visionModel = await verifyOpenAIEndpoint(openaiConfig, required("OPENAI_MODEL"), process.env.OPENAI_VISION_MODEL);
+  if (process.env.OPENAI_CLASSIFIER_MODEL) await verifyOpenAICommentClassifier(openaiConfig, process.env.OPENAI_CLASSIFIER_MODEL);
   const modelProvider = new CircuitBreakerModelProvider(new OpenAIResponsesProvider(openaiConfig));
   const attachmentService = new AttachmentService(storage, new MessengerMediaDownloader(vault, required("META_MEDIA_ALLOWED_HOSTS").split(",").map((host) => host.trim()).filter(Boolean)), new OpenAIVisionProvider(openaiConfig, visionModel), process.env.ELEVENLABS_API_KEY ? new ElevenLabsAdapter(new ElevenLabsHttpClient({ ...(process.env.ELEVENLABS_ENDPOINT ? { endpoint: process.env.ELEVENLABS_ENDPOINT } : {}), ...(process.env.ELEVENLABS_MODEL ? { model: process.env.ELEVENLABS_MODEL } : {}), ...(process.env.ELEVENLABS_TIMEOUT_MS ? { timeoutMs: Number(process.env.ELEVENLABS_TIMEOUT_MS) } : {}) }), async () => required("ELEVENLABS_API_KEY")) : null, { async extract(bytes, mimeType) { return parser.parse(mimeType === "application/pdf" ? "PDF" : mimeType.includes("wordprocessingml") ? "DOCX" : "TEXT", bytes); } }, realtime, undefined, new PostgresAttachmentRepository(db));
   const attachment: NonNullable<WorkerDependencies["attachment"]> = async (event, signal) => {
