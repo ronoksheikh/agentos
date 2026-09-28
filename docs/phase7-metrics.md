@@ -1,5 +1,16 @@
 # Phase 7 metric definitions
 
+## Agency overview
+
+The agency home page refreshes current PostgreSQL aggregates per request. All timestamps and rolling windows use UTC.
+
+| Metric | Grain and formula | Source | Caveat |
+| --- | --- | --- | --- |
+| Businesses | Count of all registered business rows | `businesses` | Includes paused, expired, and disabled records. |
+| Unread | Count of unread conversations with `is_test = false` | `conversations` | Current state; each conversation counts once. |
+| Open handoffs | Count of handoff requests in `HANDOFF_REQUESTED`, `HUMAN_ACTIVE`, or `PAUSED`, joined to non-test conversations | `handoffs`, `conversations` | Request count; multiple requests for one conversation can count more than once. |
+| Failed runs · 7 days | Count of `FAILED` runs started in the rolling preceding seven days | `agent_runs` | Includes all run kinds and does not imply a customer-facing reply failed. |
+
 The current client overview is an operational snapshot from PostgreSQL, queried when the server renders the page. Every query uses the authenticated business ID; there is no cross-business aggregation in client views. Timestamps shown in this view use UTC. Values are not a historical report or a real-time push feed; reload to refresh them.
 
 | Metric | Grain and formula | Source | Window/filter | Caveat |

@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, Card, Grid, Group, Progress, SimpleGrid, Stack, Table, Text, Title } from "@mantine/core";
+import { Alert, Button, Stack, Text, Title } from "@mantine/core";
 import Link from "next/link";
 
 const pageCopy: Record<string, { title: string; description: string }> = {
@@ -26,9 +26,8 @@ const pageCopy: Record<string, { title: string; description: string }> = {
 export function OperationalPage({ section }: { section: string }) {
   const copy = pageCopy[section] ?? { title: section, description: "Authorized operational workspace." }; const deferred = ["integrations", "failures-queues", "handoffs"].includes(section);
   if (["knowledge", "orders", "attachments", "browser-runs"].includes(section)) return <Stack gap="lg"><Title order={1}>{copy.title}</Title><Text c="dimmed">{copy.description}</Text><Alert title="Choose a business" color="gray">Phase 4 records are scoped to one business. Open its workspace to inspect the live table.</Alert><Button component={Link} href="/businesses" variant="default" w="fit-content">Open businesses</Button></Stack>;
-  return <Stack gap="lg"><Group justify="space-between" align="start"><div><Title order={1}>{copy.title}</Title><Text c="dimmed" maw={720}>{copy.description}</Text></div><Button>{section === "businesses" ? "Onboard business" : "Create"}</Button></Group>
-    {deferred && <Alert title="Planned foundation" color="gray">The data contract is visible, but execution is deferred by the Phase 2 boundary.</Alert>}
-    <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }}>{["Unread conversations", "Unresolved handoffs", "Failed runs", "Urgent issues"].map((label, i) => <Card withBorder key={label}><Text size="xs" c="dimmed">{label}</Text><Text className="metric" fw={700} fz={30}>{[12, 3, 1, 2][i]}</Text></Card>)}</SimpleGrid>
-    <Grid><Grid.Col span={{ base: 12, lg: 8 }}><Card withBorder><Group justify="space-between" mb="md"><Text fw={600}>Operational records</Text><Badge variant="light">Tenant scoped</Badge></Group><Table.ScrollContainer minWidth={560}><Table striped highlightOnHover><Table.Thead><Table.Tr><Table.Th>Name</Table.Th><Table.Th>Status</Table.Th><Table.Th>Updated</Table.Th></Table.Tr></Table.Thead><Table.Tbody><Table.Tr><Table.Td>Example record</Table.Td><Table.Td><Badge color="dark">Ready</Badge></Table.Td><Table.Td>Just now</Table.Td></Table.Tr></Table.Tbody></Table></Table.ScrollContainer></Card></Grid.Col><Grid.Col span={{ base: 12, lg: 4 }}><Card withBorder><Text fw={600}>Onboarding progress</Text><Progress value={62} my="md" color="dark" /><Text size="sm" c="dimmed">Structured profile and agent configuration are ready. Channels remain pending.</Text></Card></Grid.Col></Grid>
+  return <Stack gap="lg"><Title order={1}>{copy.title}</Title><Text c="dimmed" maw={720}>{copy.description}</Text>
+    {deferred ? <Alert title="Planned foundation" color="gray">This area does not have an operational data view yet.</Alert> : <Alert title="Live data view unavailable" color="gray">This route is a navigation placeholder. Open a business workspace for records that are currently available.</Alert>}
+    <Button component={Link} href="/businesses" variant="default" w="fit-content">Open businesses</Button>
   </Stack>;
 }

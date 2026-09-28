@@ -22,8 +22,8 @@ describe("phase 2 playground and Mantine UI", () => {
 
   test("renders the operational UI with Mantine and exposes every required route section", () => {
     const html = renderToStaticMarkup(<MantineProvider defaultColorScheme="dark"><OperationalPage section="agent-playground" /></MantineProvider>);
-    expect(html).toContain("Agent Playground"); expect(html).toContain("Tenant scoped");
-    expect(sections).toEqual(expect.arrayContaining(["Overview", "Businesses", "Agents", "Agent Playground", "Tools", "Customers", "Conversations", "Memories", "Runs", "Handoffs", "Integrations", "Failures & Queues", "Audit Logs", "Feature Flags", "Team", "Settings"]));
+    expect(html).toContain("Agent Playground"); expect(html).toContain("Live data view unavailable");
+    expect(sections).toEqual(expect.arrayContaining(["Overview", "Businesses", "Agents", "Agent Playground", "Tools", "Customers", "Conversations", "Memories", "Runs", "Usage", "Handoffs", "Integrations", "Failures & Queues", "Audit Logs", "Feature Flags", "Team", "Settings"]));
   });
 
   test("sign-in and theme controls are present without custom replacement primitives", async () => {
