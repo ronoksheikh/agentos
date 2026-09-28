@@ -71,7 +71,8 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
     actions: new DeferredChannelActionExecutor(new PostgresRuntimeActionRepository(db), new PostgresRuntimeDomainActions(db)),
     traces: new PostgresRuntimeTraceRepository(db), realtime, presence,
   });
-  const commentClassifier = process.env.OPENAI_CLASSIFIER_MODEL ? new OpenAICommentClassifier(openaiConfig, process.env.OPENAI_CLASSIFIER_MODEL) : new RuleCommentClassifier();
+  const ruleCommentClassifier = new RuleCommentClassifier();
+  const commentClassifier = process.env.OPENAI_CLASSIFIER_MODEL ? new OpenAICommentClassifier(openaiConfig, process.env.OPENAI_CLASSIFIER_MODEL, ruleCommentClassifier) : ruleCommentClassifier;
   const commentProcessor = new PostgresCommentProcessor(db, api, vault, realtime, commentClassifier, new PostgresCommentWriteExecutor(db, runtime, registry));
   const expiredContentRetention = new PostgresExpiredContentRetention(db, storage); const businessContentRetention = new PostgresBusinessContentRetention(db);
   return { db, redisUrl, runtime, registry, presence, realtime, attachment, comments: (event, signal) => commentProcessor.process(event, signal).then(() => {}), trialSweep: () => new PostgresTrialService(db).expireDue(), retentionSweep: async () => { await expiredContentRetention.sweep(); await businessContentRetention.sweep(); }, providerCircuitState: () => modelProvider.status().state, capabilities: (businessId) => runtimeCapabilityGrants(featureFlags, businessId, Boolean(browserUrl)) };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { CircuitBreakerModelProvider, OpenAICommentClassifier, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAICommentClassifier, verifyOpenAIEndpoint, type ModelProvider } from "@agentos/models";
+import { RuleCommentClassifier } from "@agentos/comments";
 import { ElevenLabsHttpClient } from "@agentos/attachments";
 import { createAgentFixture } from "./helpers";
 
@@ -11,13 +12,14 @@ const request = () => ({ runId: "01TEST", version: createAgentFixture({ models: 
 describe("Phase 7 provider configuration", () => {
   it("uses model labels for review only and falls back to deterministic rules on endpoint errors", async () => {
     let requestBody = "";
-    const classifier = new OpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async (_input, init) => { requestBody = String(init?.body); return reply([text('{"category":"price_question","confidence":0.97}')]); }) }, "classifier-v1");
+    const rules = new RuleCommentClassifier();
+    const classifier = new OpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async (_input, init) => { requestBody = String(init?.body); return reply([text('{"category":"price_question","confidence":0.97}')]); }) }, "classifier-v1", rules);
     const result = await classifier.classify({ text: "What is the price?", productText: "Blue shirt" });
     expect(result).toEqual({ schemaVersion: "1.0", category: "price_question", confidence: 0.97, requiresReply: false, requiresHuman: true, moderationRecommendation: "review", signals: ["model_label_review_only"] });
     expect(requestBody).toContain("Blue shirt");
     expect(requestBody).toContain('"store":false');
 
-    const fallback = new OpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async () => new Response("unavailable", { status: 503 })) }, "classifier-v1");
+    const fallback = new OpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async () => new Response("unavailable", { status: 503 })) }, "classifier-v1", rules);
     expect(await fallback.classify({ text: "What is the price?" })).toMatchObject({ category: "price_question", requiresReply: true, signals: ["price_question"] });
   });
 

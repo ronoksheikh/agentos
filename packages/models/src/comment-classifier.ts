@@ -1,7 +1,6 @@
 import OpenAI from "openai";
 import { z } from "zod";
 import type { CommentClassification, CommentClassifier } from "@agentos/comments";
-import { RuleCommentClassifier } from "@agentos/comments";
 import { createOpenAIClient, type OpenAIProviderConfig } from "./openai";
 
 const modelClassification = z.object({
@@ -12,9 +11,8 @@ const modelClassification = z.object({
 /** Optional model-assisted labels. Model output is always review-only until evaluated against live data. */
 export class OpenAICommentClassifier implements CommentClassifier {
   private readonly client: OpenAI;
-  private readonly rules = new RuleCommentClassifier();
 
-  constructor(config: OpenAIProviderConfig, private readonly model: string) {
+  constructor(config: OpenAIProviderConfig, private readonly model: string, private readonly fallback: CommentClassifier) {
     if (!model.trim() || model.length > 200) throw new Error("CLASSIFIER_MODEL_INVALID");
     this.client = createOpenAIClient(config);
   }
@@ -49,9 +47,9 @@ export class OpenAICommentClassifier implements CommentClassifier {
     } catch (error) {
       if (input.signal?.aborted) throw new Error("CANCELLED");
       if (error instanceof OpenAI.APIConnectionTimeoutError || error instanceof OpenAI.APIError || error instanceof SyntaxError || error instanceof z.ZodError) {
-        return this.rules.classify(input);
+        return this.fallback.classify(input);
       }
-      return this.rules.classify(input);
+      return this.fallback.classify(input);
     }
   }
 }
