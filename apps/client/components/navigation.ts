@@ -1,1 +1,1 @@
-export const clientSections: readonly string[] = ["Overview", "Conversations", "Needs Attention", "Customers", "Orders", "Comment Analytics", "Knowledge", "Attachments", "Agent Activity", "Team", "Settings"];
+export const clientSections: readonly string[] = ["Overview", "Conversations", "Needs Attention", "Human Handoffs", "Customers", "Orders", "Comment Analytics", "Knowledge", "Attachments", "Agent Activity", "Team", "Settings"];

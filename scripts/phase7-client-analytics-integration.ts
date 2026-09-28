@@ -62,6 +62,9 @@ try {
   assert.deepEqual(a.recent.map((row) => row.id), [realA]);
   assert.deepEqual(a.attention.map((row) => row.conversationId), [realA]);
   assert.equal(a.recent[0]?.customerName, "A customer");
+  const handoffsView = await service.snapshot(context(businessA), "human-handoffs");
+  assert.deepEqual(handoffsView.recent.map((row) => row.id), [realA]);
+  assert.deepEqual(handoffsView.attention.map((row) => row.conversationId), [realA]);
   const aOverview = await service.snapshot(context(businessA), "overview");
   assert.deepEqual(aOverview.performance, { windowDays: 30, inboundConversations: 2, aiFirstResponseRate: 50, handoffRate: 50, customersHelped: 1, medianFirstResponseMs: 300_000 });
   assert.deepEqual(aOverview.notifications.map((item) => item.id), [notificationA]);
