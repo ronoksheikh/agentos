@@ -18,6 +18,11 @@ describe("Phase 7 provider configuration", () => {
     expect(result).toEqual({ schemaVersion: "1.0", category: "price_question", confidence: 0.97, requiresReply: false, requiresHuman: true, moderationRecommendation: "review", signals: ["model_label_review_only"] });
     expect(requestBody).toContain("Blue shirt");
     expect(requestBody).toContain('"store":false');
+    const detailed = await classifier.classifyWithUsage({ text: "What is the price?" });
+    expect(detailed.usage).toMatchObject({ provider: "openai", model: "classifier-v1", inputTokens: 4, outputTokens: 6, labelAccepted: true });
+
+    const rejected = new OpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async () => reply([text('{"category":"not-a-category","confidence":0.7}')], { input_tokens: 3, output_tokens: 2, total_tokens: 5 })) }, "classifier-v1", rules);
+    expect((await rejected.classifyWithUsage({ text: "ambiguous" })).usage).toMatchObject({ inputTokens: 3, outputTokens: 2, labelAccepted: false });
 
     const fallback = new OpenAICommentClassifier({ apiKey: "test-key", fetch: fakeFetch(async () => new Response("unavailable", { status: 503 })) }, "classifier-v1", rules);
     expect(await fallback.classify({ text: "What is the price?" })).toMatchObject({ category: "price_question", requiresReply: true, signals: ["price_question"] });

@@ -11,7 +11,7 @@ const connectionString = process.env.DATABASE_URL;
 if (!connectionString || !new URL(connectionString).pathname.match(/^\/agentos_phase7_usage_[a-z0-9_]+$/i)) throw new Error("USAGE_INTEGRATION_REQUIRES_DISPOSABLE_DATABASE");
 const pool = new Pool({ connectionString });
 const database = drizzle(pool);
-const businessId = ulid(); const agentId = ulid(); const versionId = ulid(); const userId = ulid(); const customerId = ulid(); const conversationId = ulid(); const runId = ulid(); const failedRunId = ulid(); const sessionId = ulid();
+const businessId = ulid(); const agentId = ulid(); const versionId = ulid(); const userId = ulid(); const customerId = ulid(); const conversationId = ulid(); const runId = ulid(); const failedRunId = ulid(); const sessionId = ulid(); const connectionId = ulid();
 const businessName = `Usage Drill ${businessId}`; const agentName = `Usage Agent ${agentId}`;
 
 try {
@@ -28,7 +28,8 @@ try {
   await database.insert(db.toolCalls).values({ id: ulid(), businessId, runId, traceId: ulid(), toolName: "integration_tool", status: "SUCCEEDED", safeInput: {}, occurredAt: new Date() });
   await database.insert(db.browserSessions).values({ id: sessionId, businessId, runId, ownerId: userId, profileId: "usage-drill", safeUrl: "https://example.invalid/", status: "CLOSED", expiresAt: new Date(Date.now() + 60_000) });
   await database.insert(db.browserRuns).values({ id: ulid(), businessId, sessionId, runId, action: "extract", status: "COMPLETED", occurredAt: new Date() });
-  await database.insert(db.channelConnections).values({ id: ulid(), businessId, channel: "facebook_messenger", externalPageId: "test-page-id", agentId, setupMethod: "manual" });
+  await database.insert(db.channelConnections).values({ id: connectionId, businessId, channel: "facebook_messenger", externalPageId: "test-page-id", agentId, setupMethod: "manual" });
+  await database.insert(db.commentClassifierUsages).values([{ id: ulid(), businessId, connectionId, agentId, provider: "openai", model: "classifier-test", inputTokens: 21, outputTokens: 7, labelAccepted: true, latencyMs: 30 }, { id: ulid(), businessId, connectionId, agentId, provider: "openai", model: "classifier-test", inputTokens: 9, outputTokens: 4, labelAccepted: false, latencyMs: 40 }]);
   await database.insert(db.websiteSites).values({ id: ulid(), businessId, agentId, publicKey: ulid(), allowedOrigins: ["https://shop.example.invalid"] });
 
   const usage = await readAgencyUsage(database, new Date(Date.now() - 30 * 24 * 60 * 60_000));
@@ -37,6 +38,7 @@ try {
   assert.equal(Number(usage.totals.outputTokens), 7);
   assert.equal(Number(usage.totals.toolCalls), 1);
   assert.ok(usage.modelRows.some((row) => row.business === businessName && row.agent === agentName && row.provider === "integration-provider" && row.model === "integration-model" && Number(row.inputTokens) === 12 && Number(row.outputTokens) === 7));
+  assert.ok(usage.classifierRows.some((row) => row.business === businessName && row.agent === agentName && row.provider === "openai" && row.model === "classifier-test" && Number(row.requests) === 2 && Number(row.inputTokens) === 30 && Number(row.outputTokens) === 11 && Number(row.parsedLabels) === 1 && Number(row.fallbackLabels) === 1));
   assert.ok(usage.runRows.some((row) => row.runId === runId && Number(row.inputTokens) === 12));
   assert.ok(usage.toolRows.some((row) => row.business === businessName && row.tool === "integration_tool" && Number(row.calls) === 1));
   assert.ok(usage.browserRows.some((row) => row.business === businessName && row.action === "extract" && Number(row.runs) === 1));
@@ -47,5 +49,5 @@ try {
   assert.ok(browserActivity.some((row) => row.business === businessName && row.action === "extract"));
   assert.ok(handoffRows.some((row) => row.business === businessName && row.conversationId === conversationId));
   assert.equal(integrations.connections[0]?.business, businessName); assert.equal(integrations.sites[0]?.originCount, 1);
-  console.log("Phase 7 agency analytics: live overview, usage, run, browser, handoff, and integration views passed");
+  console.log("Phase 7 agency analytics: live overview, runtime and classifier usage, run, browser, handoff, and integration views passed");
 } finally { await pool.end(); }

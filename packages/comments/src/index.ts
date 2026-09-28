@@ -10,7 +10,8 @@ export const commentClassificationSchema = z.object({
   signals: z.array(z.string().min(1).max(80)).max(10),
 });
 export type CommentClassification = z.infer<typeof commentClassificationSchema>;
-export interface CommentClassifier { classify(input: { text: string; postText?: string | null; parentText?: string | null; productText?: string | null; signal?: AbortSignal }): Promise<CommentClassification> }
+export type CommentClassifierUsage = { provider: string; model: string; inputTokens: number; outputTokens: number; labelAccepted: boolean; latencyMs: number };
+export interface CommentClassifier { classify(input: { text: string; postText?: string | null; parentText?: string | null; productText?: string | null; signal?: AbortSignal }): Promise<CommentClassification>; classifyWithUsage?(input: { text: string; postText?: string | null; parentText?: string | null; productText?: string | null; signal?: AbortSignal }): Promise<{ classification: CommentClassification; usage?: CommentClassifierUsage }> }
 
 /** Conservative deterministic classifier. No raw text is placed in signals or audit metadata. */
 export class RuleCommentClassifier implements CommentClassifier {

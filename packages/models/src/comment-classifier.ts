@@ -18,7 +18,12 @@ export class OpenAICommentClassifier implements CommentClassifier {
   }
 
   async classify(input: Parameters<CommentClassifier["classify"]>[0]): Promise<CommentClassification> {
+    return (await this.classifyWithUsage(input)).classification;
+  }
+
+  async classifyWithUsage(input: Parameters<CommentClassifier["classify"]>[0]): Promise<{ classification: CommentClassification; usage?: { provider: string; model: string; inputTokens: number; outputTokens: number; labelAccepted: boolean; latencyMs: number } }> {
     if (input.signal?.aborted) throw new Error("CANCELLED");
+    const started = Date.now(); let usage: { provider: string; model: string; inputTokens: number; outputTokens: number; labelAccepted: boolean; latencyMs: number } | undefined;
     try {
       const response = await this.client.responses.create({
         model: this.model,
@@ -33,23 +38,18 @@ export class OpenAICommentClassifier implements CommentClassifier {
         input: JSON.stringify({ comment: input.text.slice(0, 10_000), post: input.postText?.slice(0, 4_000) ?? null, parent: input.parentText?.slice(0, 4_000) ?? null, product: input.productText?.slice(0, 2_000) ?? null }),
         text: { format: { type: "json_object" } },
       }, { signal: input.signal });
+      if (response.usage) usage = { provider: "openai", model: this.model, inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens, labelAccepted: false, latencyMs: Date.now() - started };
       if (response.status !== "completed") throw new Error("CLASSIFIER_INCOMPLETE");
       const parsed = modelClassification.parse(JSON.parse(response.output_text));
+      if (usage) usage = { ...usage, labelAccepted: true };
       // The model can label for analytics and review, but cannot authorize a public write or suppress review.
-      return {
-        schemaVersion: "1.0",
-        ...parsed,
-        requiresReply: false,
-        requiresHuman: true,
-        moderationRecommendation: "review",
-        signals: ["model_label_review_only"],
-      };
+      return { classification: { schemaVersion: "1.0", ...parsed, requiresReply: false, requiresHuman: true, moderationRecommendation: "review", signals: ["model_label_review_only"] }, ...(usage ? { usage } : {}) };
     } catch (error) {
       if (input.signal?.aborted) throw new Error("CANCELLED");
       if (error instanceof OpenAI.APIConnectionTimeoutError || error instanceof OpenAI.APIError || error instanceof SyntaxError || error instanceof z.ZodError) {
-        return this.fallback.classify(input);
+        return { classification: await this.fallback.classify(input), ...(usage ? { usage } : {}) };
       }
-      return this.fallback.classify(input);
+      return { classification: await this.fallback.classify(input), ...(usage ? { usage } : {}) };
     }
   }
 }
