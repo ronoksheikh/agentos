@@ -1,0 +1,1 @@
+ALTER TABLE "business_retention_policies" ADD COLUMN "customer_content_days" integer;

@@ -9,10 +9,11 @@ export const businessRetentionPolicySchema = z.object({
   businessId: z.string().min(1), enabled: z.boolean(), revision: z.number().int().positive(),
   messagesDays: dayRule, eventPayloadDays: dayRule, traceDetailsDays: dayRule,
   realtimePayloadDays: dayRule, browserHistoryDays: dayRule, commentTextDays: dayRule,
+  customerContentDays: dayRule,
 });
 export type BusinessRetentionPolicy = z.infer<typeof businessRetentionPolicySchema>;
 type RetentionActor = { userId: string; grants: readonly string[]; allowedBusinessIds?: ReadonlySet<string> };
-const ruleFields = ["messagesDays", "eventPayloadDays", "traceDetailsDays", "realtimePayloadDays", "browserHistoryDays", "commentTextDays"] as const;
+const ruleFields = ["messagesDays", "eventPayloadDays", "traceDetailsDays", "realtimePayloadDays", "browserHistoryDays", "commentTextDays", "customerContentDays"] as const;
 
 export class PostgresBusinessRetentionPolicies {
   constructor(private readonly database: NodePgDatabase) {}
@@ -23,7 +24,7 @@ export class PostgresBusinessRetentionPolicies {
   async get(actor: RetentionActor, businessId: string) {
     this.require(actor, businessId);
     const row = (await this.database.select().from(db.businessRetentionPolicies).where(eq(db.businessRetentionPolicies.businessId, businessId)).limit(1))[0];
-    return row ? businessRetentionPolicySchema.parse(row) : { businessId, enabled: false, revision: 0, messagesDays: null, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null };
+    return row ? businessRetentionPolicySchema.parse(row) : { businessId, enabled: false, revision: 0, messagesDays: null, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null, customerContentDays: null };
   }
   async set(actor: RetentionActor, input: Omit<BusinessRetentionPolicy, "revision"> & { expectedRevision: number; confirmScrub?: string }) {
     this.require(actor, input.businessId);
@@ -55,7 +56,7 @@ export class PostgresBusinessContentRetention {
     for (const policy of policies) {
       const categories = [
         ["messages", policy.messagesDays], ["eventPayloads", policy.eventPayloadDays], ["traceDetails", policy.traceDetailsDays],
-        ["realtimePayloads", policy.realtimePayloadDays], ["browserHistory", policy.browserHistoryDays], ["commentText", policy.commentTextDays],
+        ["realtimePayloads", policy.realtimePayloadDays], ["browserHistory", policy.browserHistoryDays], ["commentText", policy.commentTextDays], ["customerContent", policy.customerContentDays],
       ] as const;
       for (const [category, days] of categories) {
         if (days === null) continue;
@@ -90,7 +91,7 @@ export class PostgresBusinessContentRetention {
         } else if (category === "browserHistory") {
           const ids = await this.database.select({ id: db.browserRuns.id }).from(db.browserRuns).where(and(eq(db.browserRuns.businessId, policy.businessId), lte(db.browserRuns.occurredAt, cutoff), isNotNull(db.browserRuns.safeUrl))).orderBy(db.browserRuns.occurredAt).limit(limit);
           if (ids.length) count = (await this.database.update(db.browserRuns).set({ safeUrl: null }).where(and(eq(db.browserRuns.businessId, policy.businessId), inArray(db.browserRuns.id, ids.map((row) => row.id)), isNotNull(db.browserRuns.safeUrl))).returning({ id: db.browserRuns.id })).length;
-        } else {
+        } else if (category === "commentText") {
           const ids = await this.database.select({ id: db.facebookComments.id }).from(db.facebookComments).where(and(eq(db.facebookComments.businessId, policy.businessId), lte(db.facebookComments.createdAt, cutoff), sql`(${db.facebookComments.text} is not null or ${db.facebookComments.authorExternalId} is not null)`)).orderBy(db.facebookComments.createdAt).limit(limit);
           if (ids.length) {
             const commentIds = ids.map((row) => row.id);
@@ -98,6 +99,26 @@ export class PostgresBusinessContentRetention {
             const decisions = comments.length ? await this.database.update(db.commentDecisions).set({ classification: { retentionRedacted: true } }).where(and(eq(db.commentDecisions.businessId, policy.businessId), inArray(db.commentDecisions.commentId, comments.map((row) => row.id)), sql`${db.commentDecisions.classification}->>'retentionRedacted' is distinct from 'true'`)).returning({ id: db.commentDecisions.id }) : [];
             count = comments.length + decisions.length;
           }
+        } else {
+          const [customers, identities, links, memories, summaries, pins, notes] = await Promise.all([
+            this.database.select({ id: db.customers.id }).from(db.customers).where(and(eq(db.customers.businessId, policy.businessId), lte(db.customers.updatedAt, cutoff), sql`(${db.customers.displayName} is not null or cardinality(${db.customers.tags}) > 0)`)).orderBy(db.customers.updatedAt).limit(limit),
+            this.database.select({ id: db.customerIdentities.id }).from(db.customerIdentities).where(and(eq(db.customerIdentities.businessId, policy.businessId), lte(db.customerIdentities.updatedAt, cutoff), sql`(${db.customerIdentities.metadata} <> '{}'::jsonb or ${db.customerIdentities.verifiedAt} is not null)`)).orderBy(db.customerIdentities.updatedAt).limit(limit),
+            this.database.select({ id: db.identityLinks.id }).from(db.identityLinks).where(and(eq(db.identityLinks.businessId, policy.businessId), lte(db.identityLinks.updatedAt, cutoff), sql`${db.identityLinks.evidence} <> '{}'::jsonb`)).orderBy(db.identityLinks.updatedAt).limit(limit),
+            this.database.select({ id: db.memories.id }).from(db.memories).where(and(eq(db.memories.businessId, policy.businessId), lte(db.memories.updatedAt, cutoff), sql`${db.memories.content} <> '[retention redacted]'`)).orderBy(db.memories.updatedAt).limit(limit),
+            this.database.select({ id: db.conversationSummaries.id }).from(db.conversationSummaries).where(and(eq(db.conversationSummaries.businessId, policy.businessId), lte(db.conversationSummaries.updatedAt, cutoff), sql`${db.conversationSummaries.content} <> '[retention redacted]'`)).orderBy(db.conversationSummaries.updatedAt).limit(limit),
+            this.database.select({ id: db.pinnedMessages.id }).from(db.pinnedMessages).where(and(eq(db.pinnedMessages.businessId, policy.businessId), lte(db.pinnedMessages.updatedAt, cutoff), isNotNull(db.pinnedMessages.label))).orderBy(db.pinnedMessages.updatedAt).limit(limit),
+            this.database.select({ id: db.customerNotes.id }).from(db.customerNotes).where(and(eq(db.customerNotes.businessId, policy.businessId), lte(db.customerNotes.createdAt, cutoff), sql`${db.customerNotes.content} <> '[retention redacted]'`)).orderBy(db.customerNotes.createdAt).limit(limit),
+          ]);
+          const [a, b, c, d, e, f, g] = await Promise.all([
+            customers.length ? this.database.update(db.customers).set({ displayName: null, tags: [], updatedAt: now }).where(and(eq(db.customers.businessId, policy.businessId), inArray(db.customers.id, customers.map((row) => row.id)))).returning({ id: db.customers.id }) : Promise.resolve([]),
+            identities.length ? this.database.update(db.customerIdentities).set({ metadata: {}, verifiedAt: null, updatedAt: now }).where(and(eq(db.customerIdentities.businessId, policy.businessId), inArray(db.customerIdentities.id, identities.map((row) => row.id)))).returning({ id: db.customerIdentities.id }) : Promise.resolve([]),
+            links.length ? this.database.update(db.identityLinks).set({ evidence: {}, updatedAt: now }).where(and(eq(db.identityLinks.businessId, policy.businessId), inArray(db.identityLinks.id, links.map((row) => row.id)))).returning({ id: db.identityLinks.id }) : Promise.resolve([]),
+            memories.length ? this.database.update(db.memories).set({ content: "[retention redacted]", updatedAt: now }).where(and(eq(db.memories.businessId, policy.businessId), inArray(db.memories.id, memories.map((row) => row.id)))).returning({ id: db.memories.id }) : Promise.resolve([]),
+            summaries.length ? this.database.update(db.conversationSummaries).set({ content: "[retention redacted]", updatedAt: now }).where(and(eq(db.conversationSummaries.businessId, policy.businessId), inArray(db.conversationSummaries.id, summaries.map((row) => row.id)))).returning({ id: db.conversationSummaries.id }) : Promise.resolve([]),
+            pins.length ? this.database.update(db.pinnedMessages).set({ label: null, updatedAt: now }).where(and(eq(db.pinnedMessages.businessId, policy.businessId), inArray(db.pinnedMessages.id, pins.map((row) => row.id)))).returning({ id: db.pinnedMessages.id }) : Promise.resolve([]),
+            notes.length ? this.database.update(db.customerNotes).set({ content: "[retention redacted]" }).where(and(eq(db.customerNotes.businessId, policy.businessId), inArray(db.customerNotes.id, notes.map((row) => row.id)))).returning({ id: db.customerNotes.id }) : Promise.resolve([]),
+          ]);
+          count = a.length + b.length + c.length + d.length + e.length + f.length + g.length;
         }
         if (count) {
           await this.database.insert(db.auditLogs).values({ id: ulid(), businessId: policy.businessId, actorId: "system:retention", action: "business.content_retention_scrubbed", targetType: "business", targetId: policy.businessId, safeMetadata: { category, count, cutoff: cutoff.toISOString(), policyRevision: policy.revision } });

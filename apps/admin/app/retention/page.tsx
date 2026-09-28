@@ -15,6 +15,7 @@ const fields = [
   ["realtimePayloadDays", "Realtime history payloads (days)"],
   ["browserHistoryDays", "Browser URLs (days)"],
   ["commentTextDays", "Comment text and author IDs (days)"],
+  ["customerContentDays", "Customer context and profile notes (days)"],
 ] as const;
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ business?: string; notice?: string }> }) {

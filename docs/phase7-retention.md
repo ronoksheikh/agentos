@@ -16,16 +16,17 @@ The worker runs expiry cleanup and age based content scrubbing at startup and ev
 | Realtime and client projection payloads | Per-business `realtime_payload_days` | Replaces old payloads while preserving event type, sequence, and replay ordering. |
 | Browser URLs | Per-business `browser_history_days` | Clears old safe URLs while keeping status/action codes. Browser screenshots live in bounded tmpfs and are removed when sessions close or the worker container restarts. |
 | Facebook comment text and author IDs | Per-business `comment_text_days` | Clears old comment text and author external IDs and replaces linked classifier details with a redacted marker. Decision state/action result remain. |
+| Customer profiles and saved context | Per-business `customer_content_days` | Clears aged customer display names/tags, identity metadata, verification timestamps and match evidence, memory and summary text, pin labels, and customer note text. Customer, identity, memory, conversation, and message IDs remain; channel/external identity keys remain for routing and deduplication. |
 
 Attachment and knowledge APIs exclude expired content before the physical sweep. A failed private object deletion leaves its row for retry. Object keys are checked against business and attachment IDs. Audit entries retain only IDs, counts, category, cutoff, and policy revision.
 
 ## Business policy controls
 
-Migration `0018_nostalgic_nicolaos.sql` adds `business_retention_policies`. Policy is disabled by default, and each category remains unset until an agency ADMIN or SUPER_ADMIN configures it on the Content Retention page. Enabling scheduled scrubbing requires explicit confirmation. Empty category rules retain that content. Policy edits are revision checked and audited. Trial expiry does not enable or run these rules.
+Migration `0018_nostalgic_nicolaos.sql` adds `business_retention_policies`; `0019_luxuriant_namor.sql` adds the customer-context age rule. Policy is disabled by default, and each category remains unset until an agency ADMIN or SUPER_ADMIN configures it on the Content Retention page. Enabling scheduled scrubbing requires explicit confirmation. Empty category rules retain that content. Policy edits are revision checked and audited. Trial expiry does not enable or run these rules.
 
 ## Remaining policy and deletion work
 
-Age rules do not yet cover customer profile/identity fields, memories, summaries, pins, order details and notes, business announcements, audit logs, or backup copies. Those classes need a retention schedule that accounts for operations, accounting, legal holds, and idempotency before automated cleanup is enabled. A restricted operator purge exists after export and legal-hold review; see `docs/phase7-offboarding.md`. It removes business-scoped database rows and private media while retaining one global deletion audit row. External-provider records and backups are governed separately; complete legal erasure cannot be claimed until they expire or are independently erased.
+Age rules leave external channel identity keys intact for routing and deduplication. They also leave orders and order notes, active goals, business announcements, audit logs, and backup copies intact; these need a retention schedule that accounts for operations, accounting, legal holds, and idempotency before automated cleanup is enabled. The restricted operator purge exists after export and legal-hold review; see `docs/phase7-offboarding.md`. It removes business-scoped database rows and private media while retaining one global deletion audit row. External-provider records and backups are governed separately; complete legal erasure cannot be claimed until they expire or are independently erased.
 
 Before an approved offboarding purge, revoke channel credentials and visitor sessions, disable sites/automation, drain work and unknown sends, export permitted data, then verify the approved deletion plan. Trial expiry must never trigger data deletion.
 
@@ -33,4 +34,4 @@ Before an approved offboarding purge, revoke channel credentials and visitor ses
 
 `bun run db:phase7-retention` on disposable PostgreSQL 16 verified attachment/object and knowledge/chunk cleanup, scoped audit records, cross-tenant survival, and a zero-change second sweep.
 
-`DATABASE_URL=<disposable PostgreSQL URL> bun run db:phase7-retention-policy` verified policy default-off, explicit confirmation, authorization, revision conflict, tenant isolation, pending-event preservation, payload scrubbing, audit metadata, and repeated-sweep idempotency. Neither drill used a production object store or performed legal offboarding signoff.
+`DATABASE_URL=<disposable PostgreSQL URL> bun run db:phase7-retention-policy` verified policy default-off, explicit confirmation, authorization, revision conflict, tenant isolation, pending-event preservation, event/profile/memory/summary/pin/note scrubbing, identity-key preservation, audit metadata, and repeated-sweep idempotency. The migration and drill passed on a fresh disposable PostgreSQL 16 database. Neither drill used a production object store or performed legal offboarding signoff.
