@@ -8,7 +8,10 @@ export const dynamic = "force-dynamic";
 export default async function AgencyUsagePage() {
   await requireAgencyPage("run.read");
   const since = new Date(Date.now() - 30 * 24 * 60 * 60_000);
-  const { totals: total, modelRows, runRows, toolRows, browserRows } = await readAgencyUsage(database, since);
+  let usage: Awaited<ReturnType<typeof readAgencyUsage>>;
+  try { usage = await readAgencyUsage(database, since); }
+  catch { return <DashboardShell><Alert color="red" title="Usage is temporarily unavailable">The usage records could not be loaded. Try again later or check agency system health.</Alert></DashboardShell>; }
+  const { totals: total, modelRows, runRows, toolRows, browserRows } = usage;
   const number = (value: number | bigint) => Number(value).toLocaleString("en-US");
   const empty = (columns: number, message: string) => <Table.Tr><Table.Td colSpan={columns}><Text c="dimmed" ta="center" py="md">{message}</Text></Table.Td></Table.Tr>;
   return <DashboardShell><Stack gap="lg">
