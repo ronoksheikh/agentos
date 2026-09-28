@@ -8,6 +8,7 @@ import { createTrustedBusinessContext, type TrustedBusinessContext } from "@agen
 import { FACEBOOK_MESSENGER } from "./adapter";
 import { MetaApiError, META_GRAPH_VERSION, type MetaApi } from "./meta-api";
 import { PostgresCredentialVault } from "./secrets";
+import { notifyMessengerReauthorization } from "./notifications";
 
 const pageIdSchema = z.string().regex(/^\d{5,30}$/);
 const tokenSchema = z.string().min(20).max(10000);
@@ -90,6 +91,7 @@ export class MetaConnectionService {
     } catch (error) {
       const safeCode = error instanceof MetaApiError ? error.safeCode : "PAGE_IDENTITY_MISMATCH";
       await this.db.update(channelConnections).set({ state: safeCode === "META_AUTH" ? "NEEDS_REAUTHORIZATION" : "FAILED", paused: true, lastErrorCode: safeCode, updatedAt: new Date() }).where(eq(channelConnections.id, id));
+      if (safeCode === "META_AUTH" && row.state !== "NEEDS_REAUTHORIZATION") await notifyMessengerReauthorization(this.db, context.businessId, id, safeCode);
       throw new Error(safeCode);
     }
     return this.safe(await this.require(context, id));

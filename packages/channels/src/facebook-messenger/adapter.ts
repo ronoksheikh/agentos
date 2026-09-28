@@ -10,6 +10,7 @@ import type { ChannelAdapter, ChannelCapabilities, PresenceOperation } from "../
 import type { TrustedBusinessContext } from "@agentos/shared";
 import { MetaApiError, type MetaApi } from "./meta-api";
 import { PostgresCredentialVault } from "./secrets";
+import { notifyMessengerReauthorization } from "./notifications";
 
 export const FACEBOOK_MESSENGER = "facebook_messenger";
 const identity = z.object({ id: z.string().min(1).max(200) });
@@ -187,7 +188,10 @@ export class FacebookMessengerAdapter implements ChannelAdapter {
     } catch (error) {
       const definite = error instanceof MetaApiError && ["META_AUTH", "META_PERMISSION", "META_RATE_LIMIT", "META_REJECTED"].includes(error.safeCode);
       await this.db.update(messengerSends).set({ state: definite ? "FAILED" : "UNKNOWN", safeCode: error instanceof MetaApiError ? error.safeCode : "EXTERNAL_OUTCOME_UNKNOWN", updatedAt: new Date() }).where(eq(messengerSends.id, inserted[0]!.id));
-      if (error instanceof MetaApiError && error.safeCode === "META_AUTH") await this.db.update(channelConnections).set({ state: "NEEDS_REAUTHORIZATION", paused: true, lastErrorCode: "META_AUTH", updatedAt: new Date() }).where(and(eq(channelConnections.id, connection.id), eq(channelConnections.businessId, context.businessId)));
+      if (error instanceof MetaApiError && error.safeCode === "META_AUTH") {
+        await this.db.update(channelConnections).set({ state: "NEEDS_REAUTHORIZATION", paused: true, lastErrorCode: "META_AUTH", updatedAt: new Date() }).where(and(eq(channelConnections.id, connection.id), eq(channelConnections.businessId, context.businessId)));
+        if (connection.state !== "NEEDS_REAUTHORIZATION") await notifyMessengerReauthorization(this.db, context.businessId, connection.id, error.safeCode);
+      }
       if (error instanceof MetaApiError && error.safeCode === "META_RATE_LIMIT") throw Object.assign(new Error("CHANNEL_RATE_LIMIT"), { code: "CHANNEL_RATE_LIMIT", retryAfterMs: error.retryAfterMs ?? 1000 });
       if (definite) return { status: "SKIPPED" as const, safeReason: error.safeCode };
       throw new Error("EXTERNAL_OUTCOME_UNKNOWN");

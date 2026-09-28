@@ -5,7 +5,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { and, eq } from "drizzle-orm";
 import { ulid } from "ulid";
 import * as dbs from "@agentos/database";
-import { FacebookMessengerAdapter, InMemoryChannelRegistry, MessengerWebhook, MetaConnectionService, PostgresCredentialVault, type MetaApi } from "@agentos/channels";
+import { FacebookMessengerAdapter, InMemoryChannelRegistry, MessengerWebhook, MetaApiError, MetaConnectionService, PostgresCredentialVault, type MetaApi } from "@agentos/channels";
 import { PostgresCommentAnalytics, PostgresCommentPolicyService, PostgresCommentProcessor, PostgresCommentWriteExecutor, RuleCommentClassifier } from "@agentos/comments";
 import type { AgentRuntime, AgentRunInput, AgentRunResult } from "@agentos/agent-runtime";
 import { EventRouter, Phase5Store } from "@agentos/phase5";
@@ -15,8 +15,8 @@ import { createAgentFixture, ids } from "../tests/helpers";
 
 const databaseUrl = process.env.DATABASE_URL; if (!databaseUrl) throw new Error("DATABASE_URL_REQUIRED");
 const pool = new Pool({ connectionString: databaseUrl }); const db = drizzle(pool); const appSecret = "phase-seven-comment-app-secret"; const pageId = String(Math.floor(100_000_000 + Math.random() * 900_000_000));
-const replyCalls: string[] = []; const hideCalls: string[] = [];
-const api: MetaApi = { async exchangeCode() { return "unused"; }, async listPages() { return []; }, async verifyPage() { return { id: pageId, name: "Test Page" }; }, async subscribePage() { return true; }, async subscribeFeed() { return true; }, async isSubscribed() { return true; }, async send() { return {}; }, async inspectToken() { return { appId: "test-app", valid: true, type: "PAGE", scopes: ["pages_read_engagement", "pages_manage_engagement"] }; }, async getComment(id) { return { id, message: id === "parent-3" ? "Is the blue version available?" : id.endsWith("2") ? "The item arrived broken. I need a refund." : id.endsWith("4") ? "Free followers visit my page https://spam.example" : "How much is this?", authorId: id.endsWith("6") ? pageId : `author-${id}`, ...(id === "comment-3" ? { parentId: "parent-3" } : {}), postId: "post-1", canComment: true, canHide: true, isHidden: false }; }, async getPost(id) { return { id, message: "Product details", authorId: pageId }; }, async replyComment(id) { replyCalls.push(id); if (id.endsWith("5")) throw new Error("Network response lost"); return { id: `reply-${id}` }; }, async hideComment(id) { hideCalls.push(id); return true; } };
+const replyCalls: string[] = []; const hideCalls: string[] = []; let authFailure = false;
+const api: MetaApi = { async exchangeCode() { return "unused"; }, async listPages() { return []; }, async verifyPage() { if (authFailure) throw new MetaApiError("META_AUTH"); return { id: pageId, name: "Test Page" }; }, async subscribePage() { return true; }, async subscribeFeed() { return true; }, async isSubscribed() { return true; }, async send() { return {}; }, async inspectToken() { return { appId: "test-app", valid: true, type: "PAGE", scopes: ["pages_read_engagement", "pages_manage_engagement"] }; }, async getComment(id) { return { id, message: id === "parent-3" ? "Is the blue version available?" : id.endsWith("2") ? "The item arrived broken. I need a refund." : id.endsWith("4") ? "Free followers visit my page https://spam.example" : "How much is this?", authorId: id.endsWith("6") ? pageId : `author-${id}`, ...(id === "comment-3" ? { parentId: "parent-3" } : {}), postId: "post-1", canComment: true, canHide: true, isHidden: false }; }, async getPost(id) { return { id, message: "Product details", authorId: pageId }; }, async replyComment(id) { replyCalls.push(id); if (id.endsWith("5")) throw new Error("Network response lost"); return { id: `reply-${id}` }; }, async hideComment(id) { hideCalls.push(id); return true; } };
 const vault = new PostgresCredentialVault(db, Buffer.alloc(32, 7), "test");
 try {
   const fixture = createAgentFixture();
@@ -109,6 +109,11 @@ try {
   assert.ok(report.openReviews >= 2 && report.reviewQueue.some((row) => row.id === uncertainDecision.id));
   assert.equal((await analytics.summary(wrongTenant, connectionId)).received, 0);
   await assert.rejects(() => analytics.markReviewed(wrongTenant, uncertainDecision.id, "FOLLOW_UP_REQUIRED"), /COMMENT_DECISION_NOT_FOUND/);
+  authFailure = true;
+  await assert.rejects(connections.verifyCredentials(agency, connectionId), /META_AUTH/);
+  await assert.rejects(connections.verifyCredentials(agency, connectionId), /META_AUTH/);
+  const reauthNotices = await db.select().from(dbs.notifications).where(and(eq(dbs.notifications.businessId, ids.businessA), eq(dbs.notifications.type, "CHANNEL_REAUTHORIZATION_REQUIRED")));
+  assert.equal(reauthNotices.length, 1); assert.deepEqual(reauthNotices[0]!.safePayload, { channel: "facebook_messenger", safeCode: "META_AUTH" });
   await assert.rejects(() => analytics.markReviewed(agency, uncertainDecision.id, "ACKNOWLEDGED"), /EXTERNAL_OUTCOME_UNVERIFIED/);
   const reviewId = await analytics.markReviewed(agency, uncertainDecision.id, "FOLLOW_UP_REQUIRED");
   assert.equal(await analytics.markReviewed(agency, uncertainDecision.id, "FOLLOW_UP_REQUIRED"), reviewId);
