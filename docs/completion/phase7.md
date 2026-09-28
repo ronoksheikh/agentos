@@ -66,6 +66,7 @@ The full `bun run db:phase5-smoke` passed on a fresh disposable PostgreSQL 16 da
 6. **Analytics limits:** Validated conversation question categories, customer objections, attributed conversion/revenue, and dollar cost estimates are unavailable in the persisted source data. Optional comment-classifier model usage is not yet included in the agency Usage page. Do not infer business outcomes or costs from comment categories or unrelated orders.
 7. **Reserved flags:** `experimental_tools` and `runtime_variant` have disabled defaults but no production consumers. They remain hidden from the agency form.
 8. **Retention scope:** Order/order-note, active-goal, business-announcement, audit-age, and backup-copy retention remain separate policy work. External identity keys remain for routing/dedupe.
+9. **Invitation delivery:** Issuance uses the configured `AUTH_EMAIL_WEBHOOK_URL` and expects `agency-invitation` and `business-invitation` templates. The gateway and delivered email links require deployment verification; undeliverable invitations expire and are audited.
 
 Other explicit contracts, definitions, and operating procedures are in `docs/phase7-browser-use.md`, `docs/phase7-webchat.md`, `docs/phase7-comments.md`, `docs/phase7-metrics.md`, `docs/phase7-notifications.md`, `docs/phase7-trial.md`, `docs/phase7-flags.md`, `docs/phase7-evaluations.md`, `docs/phase7-health.md`, `docs/phase7-retention.md`, `docs/phase7-backup.md`, and `docs/phase7-offboarding.md`.
 
