@@ -77,7 +77,11 @@ export class PostgresRuntimeDomainActions implements DomainActionHandler {
     await this.db.transaction(async (tx) => {
       const conversation = (await tx.select({ ownership: dbs.conversations.ownership, customerId: dbs.conversations.customerId, channel: dbs.conversations.channel }).from(dbs.conversations).where(and(eq(dbs.conversations.id, context.conversationId!), eq(dbs.conversations.businessId, context.businessId))).limit(1).for("update"))[0];
       if (!conversation) throw new Error("CONVERSATION_NOT_FOUND");
-      await tx.insert(dbs.handoffs).values({ id: ulid(), businessId: context.businessId, conversationId: context.conversationId!, customerId: conversation.customerId, runId, channel: conversation.channel, reason: action.reason, priority: action.priority, safeSummary: action.safeSummary ?? null, state: "HANDOFF_REQUESTED", traceId: context.traceId, idempotencyKey: action.idempotencyKey }).onConflictDoNothing();
+    const created = await tx.insert(dbs.handoffs).values({ id: ulid(), businessId: context.businessId, conversationId: context.conversationId!, customerId: conversation.customerId, runId, channel: conversation.channel, reason: action.reason, priority: action.priority, safeSummary: action.safeSummary ?? null, state: "HANDOFF_REQUESTED", traceId: context.traceId, idempotencyKey: action.idempotencyKey }).onConflictDoNothing().returning({ id: dbs.handoffs.id });
+    if (created.length) {
+      const members = await tx.select({ userId: dbs.businessMemberships.userId }).from(dbs.businessMemberships).where(eq(dbs.businessMemberships.businessId, context.businessId));
+      if (members.length) await tx.insert(dbs.notifications).values(members.map(({ userId }) => ({ id: ulid(), businessId: context.businessId, userId, handoffId: created[0]!.id, conversationId: context.conversationId!, type: "HANDOFF_REQUESTED", severity: action.priority === "URGENT" ? "URGENT" : action.priority === "HIGH" ? "WARNING" : "NORMAL", dedupeKey: `handoff:${created[0]!.id}:requested`, safePayload: { priority: action.priority } }))).onConflictDoNothing();
+    }
       await tx.update(dbs.conversations).set({ ownership: "HANDOFF_REQUESTED", updatedAt: new Date() }).where(and(eq(dbs.conversations.id, context.conversationId!), eq(dbs.conversations.businessId, context.businessId)));
     });
   }
