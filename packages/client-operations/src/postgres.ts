@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, ilike, inArray, isNull, max, sql, asc } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as dbs from "@agentos/database";
 import type { TrustedBusinessContext } from "@agentos/shared";
@@ -6,6 +6,23 @@ import type { TrustedBusinessContext } from "@agentos/shared";
 /** Current operational counts and a bounded business-scoped conversation list. */
 export class PostgresClientDashboard {
   constructor(private readonly db: NodePgDatabase, private readonly now: () => Date = () => new Date()) {}
+  async customerDirectory(context: TrustedBusinessContext, search = "") {
+    if (context.principal.kind !== "user" || !context.capabilityGrants.includes("customer.read")) throw new Error("FORBIDDEN");
+    const normalizedSearch = search.trim().slice(0, 120);
+    const rows = await this.db.select({
+      id: dbs.customers.id, displayName: dbs.customers.displayName, tags: dbs.customers.tags, updatedAt: dbs.customers.updatedAt,
+      conversationCount: sql<number>`count(${dbs.conversations.id})::int`, lastConversationAt: max(dbs.conversations.updatedAt),
+    }).from(dbs.customers).leftJoin(dbs.conversations, and(eq(dbs.conversations.businessId, context.businessId), eq(dbs.conversations.customerId, dbs.customers.id), eq(dbs.conversations.isTest, false)))
+      .where(and(eq(dbs.customers.businessId, context.businessId), ...(normalizedSearch ? [ilike(dbs.customers.displayName, `%${normalizedSearch}%`)] : [])))
+      .groupBy(dbs.customers.id).orderBy(desc(dbs.customers.updatedAt), desc(dbs.customers.id)).limit(100);
+    return rows.map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString(), lastConversationAt: row.lastConversationAt?.toISOString() ?? null }));
+  }
+  async teamDirectory(context: TrustedBusinessContext) {
+    if (context.principal.kind !== "user" || !context.capabilityGrants.includes("member.manage")) throw new Error("FORBIDDEN");
+    return this.db.select({ userId: dbs.users.id, name: dbs.users.name, email: dbs.users.email, accountState: dbs.users.state, role: dbs.businessMemberships.role, capabilities: dbs.businessMemberships.capabilities, joinedAt: dbs.businessMemberships.createdAt })
+      .from(dbs.businessMemberships).innerJoin(dbs.users, eq(dbs.users.id, dbs.businessMemberships.userId)).where(eq(dbs.businessMemberships.businessId, context.businessId))
+      .orderBy(asc(dbs.users.name), asc(dbs.users.id)).limit(100).then((rows) => rows.map((row) => ({ ...row, joinedAt: row.joinedAt.toISOString() })));
+  }
   async snapshot(context: TrustedBusinessContext, section: string, filter: { unread?: boolean; urgent?: boolean; failed?: boolean } = {}) {
     if (context.principal.kind !== "user" || !context.capabilityGrants.includes("conversation.read")) throw new Error("FORBIDDEN");
     const businessId = context.businessId;

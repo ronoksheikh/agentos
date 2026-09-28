@@ -46,6 +46,17 @@ try {
     { id: notificationB, businessId: businessB, userId: userB, conversationId: realB, type: "TRIAL_STARTED", severity: "NORMAL", dedupeKey: "trial:b", safePayload: {} },
   ]);
   const service = new PostgresClientDashboard(db);
+  const customerDirectory = await service.customerDirectory(context(businessA, ["customer.read"]));
+  assert.deepEqual(customerDirectory.map((row) => row.id), [customerA]);
+  assert.equal(customerDirectory[0]?.conversationCount, 2);
+  assert.ok(customerDirectory[0]?.lastConversationAt);
+  assert.deepEqual((await service.customerDirectory(context(businessA, ["customer.read"]), "A customer")).map((row) => row.id), [customerA]);
+  assert.deepEqual(await service.customerDirectory(context(businessA, ["customer.read"]), "B customer"), []);
+  const teamDirectory = await service.teamDirectory(context(businessA, ["member.manage"]));
+  assert.deepEqual(teamDirectory.map((row) => row.userId).sort(), [userA, userA2].sort());
+  assert.ok(teamDirectory.every((row) => row.email.endsWith("@example.test")));
+  await assert.rejects(service.customerDirectory(context(businessA)), /FORBIDDEN/);
+  await assert.rejects(service.teamDirectory(context(businessA)), /FORBIDDEN/);
   const a = await service.snapshot(context(businessA), "needs-attention", { urgent: true });
   assert.deepEqual(a.counters, { unreadConversations: 1, unresolvedHandoffs: 1, failedRuns: 0, urgentIssues: 1 });
   assert.deepEqual(a.recent.map((row) => row.id), [realA]);
