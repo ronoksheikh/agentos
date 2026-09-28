@@ -3,12 +3,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
-import { ulid } from "ulid";
 import { z } from "zod";
 import { agencyRoleSchema, businessRoleSchema } from "@agentos/auth";
-import { auditLogs, businesses, invitations } from "@agentos/database";
+import { businesses } from "@agentos/database";
 import { database, requireAgencyPage } from "../../lib/server";
-import { createInvitationLink, persistInvitation } from "../../lib/invitations";
+import { createInvitationLink, deliverInvitationEmail, expireUndeliveredInvitation, persistInvitation } from "../../lib/invitations";
 
 type InvitationState = { kind: "idle" | "success" | "error"; message: string };
 
@@ -54,18 +53,14 @@ export async function createInvitationAction(_previous: InvitationState, form: F
     return { kind: "error", message: "The invitation could not be created." };
   }
 
-  const delivery = await fetch(emailGateway, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ template: input.scope === "AGENCY" ? "agency-invitation" : "business-invitation", recipient: input.email, url: createInvitationLink(invitationBase, token), expiresAt: record.expiresAt.toISOString(), ...(businessName ? { businessName } : {}) }),
-    signal: AbortSignal.timeout(8_000),
-  }).then((response) => response.ok).catch(() => false);
+  const delivery = await deliverInvitationEmail({ endpoint: emailGateway, template: input.scope === "AGENCY" ? "agency-invitation" : "business-invitation", recipient: input.email, url: createInvitationLink(invitationBase, token), expiresAt: record.expiresAt.toISOString(), ...(businessName ? { businessName } : {}) });
   if (!delivery) {
-    await database.transaction(async (tx) => {
-      await tx.update(invitations).set({ expiresAt: now, updatedAt: now }).where(eq(invitations.id, record.id));
-      await tx.insert(auditLogs).values({ id: ulid(), businessId: input.scope === "BUSINESS" ? input.businessId! : null, actorId: access.session.user.id, action: "invitation.delivery_failed", targetType: "invitation", targetId: record.id, safeMetadata: { scope: input.scope } });
-    });
-    return { kind: "error", message: "The invitation email was not accepted by the configured delivery service; the link was expired." };
+    const failureScope = input.scope === "BUSINESS"
+      ? await expireUndeliveredInvitation(database, { invitationId: record.id, scope: "BUSINESS", businessId: input.businessId!, actorId: access.session.user.id, now })
+      : await expireUndeliveredInvitation(database, { invitationId: record.id, scope: "AGENCY", actorId: access.session.user.id, now });
+    revalidatePath("/team");
+    if (input.businessId) revalidatePath(`/businesses/${input.businessId}`);
+    return { kind: "error", message: failureScope ? "The invitation email was not accepted by the configured delivery service; the link was expired." : "Invitation delivery could not be confirmed. Check its current status before retrying." };
   }
 
   revalidatePath("/team");
