@@ -16,7 +16,7 @@ export function metaServices() {
   const connections = new MetaConnectionService(database, api, vault, appId, required("META_OAUTH_REDIRECT_URI"), required("META_WEBHOOK_CALLBACK_URL"));
   const adapter = new FacebookMessengerAdapter(database, api, vault, appSecret);
   const webhook = new MessengerWebhook(database, adapter, connections, appSecret, required("META_WEBHOOK_VERIFY_TOKEN"));
-  return { connections, webhook };
+  return { connections, webhook, adapter };
 }
 
 export async function agencyMetaContext(businessId: string) {

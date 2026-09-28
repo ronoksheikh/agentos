@@ -9,7 +9,7 @@ import { createTrustedBusinessContext, ulidSchema } from "@agentos/shared";
 import { CommentAnalytics } from "../../../../../client/components/CommentAnalytics";
 import { DashboardShell } from "../../../../components/Shell";
 import { database, requireAgencyPage } from "../../../../lib/server";
-import { recordAgencyCommentReviewAction } from "./actions";
+import { performAgencyManualCommentAction, recordAgencyCommentReviewAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 export default async function Page({ params, searchParams }: { params: Promise<{ businessId: string }>; searchParams: Promise<{ notice?: string }> }) {
@@ -20,5 +20,5 @@ export default async function Page({ params, searchParams }: { params: Promise<{
   const context = createTrustedBusinessContext({ businessId, principal: { kind: "user", userId: access.session.user.id, sessionId: access.session.session.id }, source: "authenticated_request", traceId: ulid(), capabilityGrants: grants });
   const summary = await new PostgresCommentAnalytics(database).summary(context);
   const query = await searchParams;
-  return <DashboardShell><Stack>{query.notice && <Alert color={query.notice.includes("failed") || query.notice.includes("invalid") ? "red" : "green"}>{query.notice.replaceAll("-", " ")}</Alert>}<CommentAnalytics summary={summary} businessId={businessId} canManage={grants.includes("channel.manage")} reviewAction={recordAgencyCommentReviewAction} /></Stack></DashboardShell>;
+  return <DashboardShell><Stack>{query.notice && <Alert color={query.notice.includes("failed") || query.notice.includes("invalid") ? "red" : "green"}>{query.notice.replaceAll("-", " ")}</Alert>}<CommentAnalytics summary={summary} businessId={businessId} canManage={grants.includes("channel.manage")} reviewAction={recordAgencyCommentReviewAction} {...(grants.includes("channel.manage") ? { manualAction: performAgencyManualCommentAction } : {})} /></Stack></DashboardShell>;
 }

@@ -61,3 +61,4 @@ export * from "./processor";
 export * from "./writes";
 export * from "./policies";
 export * from "./analytics";
+export * from "./manual";

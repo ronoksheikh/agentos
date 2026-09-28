@@ -6,7 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { ulid } from "ulid";
 import * as dbs from "@agentos/database";
 import { FacebookMessengerAdapter, InMemoryChannelRegistry, MessengerWebhook, MetaApiError, MetaConnectionService, PostgresCredentialVault, type MetaApi } from "@agentos/channels";
-import { PostgresCommentAnalytics, PostgresCommentPolicyService, PostgresCommentProcessor, PostgresCommentWriteExecutor, RuleCommentClassifier } from "@agentos/comments";
+import { PostgresCommentAnalytics, PostgresCommentPolicyService, PostgresCommentProcessor, PostgresCommentWriteExecutor, PostgresManualCommentOperations, RuleCommentClassifier } from "@agentos/comments";
 import type { AgentRuntime, AgentRunInput, AgentRunResult } from "@agentos/agent-runtime";
 import { EventRouter, Phase5Store } from "@agentos/phase5";
 import { InMemoryRealtimeBus } from "@agentos/realtime";
@@ -71,13 +71,26 @@ try {
   await assert.rejects(connections.verifyCommentCapability(agency, connectionId, "controlled-7", "REPLY"), /COMMENT_TEST_REVIEW_REQUIRED/);
   assert.equal((await connections.verifyCommentCapability(agency, connectionId, "controlled-7", "HIDE")).commentCapabilities.hideVerified, true);
   assert.equal((await policyService.update(agency, connectionId, { enabled: true, autoReply: true, autoHide: true, minimumConfidence: 0.8, featureEnabled: true })).version, 2);
+  const manual = new PostgresManualCommentOperations(db, adapter); const manualReplyRequest = ulid();
+  const manualReply = await manual.apply(agency, { commentId: first.id, requestId: manualReplyRequest, mode: "REPLY", text: "Thanks for asking. Please message us for current pricing." });
+  assert.equal(manualReply.status, "COMPLETED");
+  await manual.apply(agency, { commentId: first.id, requestId: manualReplyRequest, mode: "REPLY", text: "Thanks for asking. Please message us for current pricing." });
+  const manualHideRequest = ulid();
+  const manualHide = await manual.apply(agency, { commentId: first.id, requestId: manualHideRequest, mode: "HIDE" });
+  assert.equal(manualHide.status, "COMPLETED");
+  await manual.apply(agency, { commentId: first.id, requestId: manualHideRequest, mode: "HIDE" });
+  assert.deepEqual(replyCalls, ["controlled-7", "comment-1"]); assert.deepEqual(hideCalls, ["controlled-7", "comment-1"]);
+  const manualReplyDecision = (await db.select().from(dbs.commentDecisions).where(eq(dbs.commentDecisions.id, manualReply.decisionId)))[0]!;
+  assert.equal(manualReplyDecision.actorId, ids.user); assert.equal(manualReplyDecision.safeReason, "MANUAL_APPROVED_REPLY");
+  assert.equal((await db.select().from(dbs.messages).where(and(eq(dbs.messages.conversationId, first.conversationId!), eq(dbs.messages.senderKind, "HUMAN")))).length, 1);
+  await assert.rejects(manual.apply(wrongTenant, { commentId: first.id, requestId: ulid(), mode: "REPLY", text: "Unauthorized" }), /COMMENT_NOT_FOUND/);
   for (const commentId of ["comment-3", "comment-4", "comment-5", "comment-6"]) {
     assert.equal((await receive(commentId)).status, 200);
     const inbound = (await db.select({ id: dbs.universalEvents.id }).from(dbs.universalEvents).where(and(eq(dbs.universalEvents.businessId, ids.businessA), eq(dbs.universalEvents.dedupeKey, `meta:comment:${commentId}:add`))))[0]!;
     await router.process(await store.getEvent(ids.businessA, inbound.id), new AbortController().signal);
     await router.process(await store.getEvent(ids.businessA, inbound.id), new AbortController().signal);
   }
-  assert.deepEqual(replyCalls, ["controlled-7", "comment-3", "comment-5"]); assert.deepEqual(hideCalls, ["controlled-7", "comment-4"]); assert.equal(runtimeCalls, 2);
+  assert.deepEqual(replyCalls, ["controlled-7", "comment-1", "comment-3", "comment-5"]); assert.deepEqual(hideCalls, ["controlled-7", "comment-1", "comment-4"]); assert.equal(runtimeCalls, 2);
   assert.ok(classifierInputs.some((input) => input.text === "How much is this?" && input.postText === "Product details" && input.parentText === "Is the blue version available?"));
   const comment = async (externalId: string) => (await db.select().from(dbs.facebookComments).where(and(eq(dbs.facebookComments.connectionId, connectionId), eq(dbs.facebookComments.externalCommentId, externalId))))[0]!;
   const replied = await comment("comment-3"); const hidden = await comment("comment-4"); const uncertain = await comment("comment-5"); const own = await comment("comment-6");
@@ -92,7 +105,7 @@ try {
   await db.update(dbs.conversations).set({ ownership: "HUMAN_ACTIVE" }).where(eq(dbs.conversations.id, first.conversationId!));
   await router.process(await store.getEvent(ids.businessA, firstEvent.id), new AbortController().signal);
   assert.equal((await db.select().from(dbs.commentDecisions).where(and(eq(dbs.commentDecisions.commentId, first.id), eq(dbs.commentDecisions.policyVersion, 2))))[0]!.outcome, "HANDOFF");
-  assert.deepEqual(replyCalls, ["controlled-7", "comment-3", "comment-5"]);
+  assert.deepEqual(replyCalls, ["controlled-7", "comment-1", "comment-3", "comment-5"]);
   const ownDecision = (await db.select().from(dbs.commentDecisions).where(eq(dbs.commentDecisions.commentId, own.id)))[0]!;
   await db.update(dbs.commentDecisions).set({ actionStatus: "PENDING" }).where(eq(dbs.commentDecisions.id, ownDecision.id));
   const ownEvent = (await db.select({ id: dbs.universalEvents.id }).from(dbs.universalEvents).where(and(eq(dbs.universalEvents.businessId, ids.businessA), eq(dbs.universalEvents.dedupeKey, "meta:comment:comment-6:add"))))[0]!;
@@ -119,5 +132,5 @@ try {
   assert.equal(await analytics.markReviewed(agency, uncertainDecision.id, "FOLLOW_UP_REQUIRED"), reviewId);
   await assert.rejects(() => analytics.markReviewed(agency, uncertainDecision.id, "EXTERNAL_CHECKED"), /REVIEW_ALREADY_RECORDED/);
   assert.equal((await analytics.summary(agency, connectionId)).openReviews, report.openReviews - 1);
-  console.log("Phase 7 comments: signed feed, dedupe, scoped Graph context, safe keep/handoff, runtime reply, hide, unknown outcome, author guard, human ownership, audit/realtime, and replay passed");
+  console.log("Phase 7 comments: signed feed, dedupe, scoped Graph context, safe keep/handoff, runtime reply, manual reply/hide and replay, unknown outcome, author guard, human ownership, audit/realtime passed");
 } finally { await pool.end(); }
