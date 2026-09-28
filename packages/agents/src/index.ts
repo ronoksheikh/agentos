@@ -94,3 +94,10 @@ export function assertAgentVersionCompatible(config: AgentVersionConfig) {
   if (config.browserPolicy.enabled && !config.browserPolicy.allowedDomains.length) throw new Error("BROWSER_DOMAINS_REQUIRED");
   if (config.knowledgePolicy.enabled && !config.knowledgePolicy.sourceIds.length) throw new Error("KNOWLEDGE_SOURCES_REQUIRED");
 }
+
+/** Returns a request-scoped model variant without changing the persisted version snapshot. */
+export function selectRuntimeModelVariant(version: AgentVersion, enabled: boolean): AgentVersion {
+  const primary = version.config.models.primary; const fallback = version.config.models.fallback;
+  if (!enabled || !fallback || fallback.provider !== primary.provider || fallback.model === primary.model) return version;
+  return { ...version, config: { ...version.config, models: { ...version.config.models, primary: fallback, fallback: primary } } };
+}

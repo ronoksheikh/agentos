@@ -1,6 +1,6 @@
 import { ulid } from "ulid";
 import { z } from "zod";
-import type { AgentVersionService } from "@agentos/agents";
+import type { AgentVersion, AgentVersionService } from "@agentos/agents";
 import { agentActionSchema, type AgentAction, type IdempotentActionExecutor } from "@agentos/actions";
 import type { ContextEngine, ContextBundle } from "@agentos/context";
 import { agentEventSchema, type AgentEvent } from "@agentos/events";
@@ -11,6 +11,7 @@ import { DefaultToolPolicyEvaluator, ToolRegistry, type SafeToolResult, type Too
 import type { TraceRepository, AgentRunRecord } from "@agentos/trace";
 
 export interface AgentRunInput { context: TrustedBusinessContext; event: AgentEvent; agentId: string; testVersionId?: string; debug?: boolean; deliveryManaged?: boolean; draftOnly?: boolean; }
+export type RuntimeVersionSelector = (context: TrustedBusinessContext, version: AgentVersion) => Promise<AgentVersion>;
 export interface RunLifecycleObserver { transition(context: TrustedBusinessContext, channel: string, state: "RECEIVED" | "QUEUED" | "PROCESSING" | "COMPOSING" | "SENDING" | "SENT" | "FAILED" | "CANCELLED" | "SUPPRESSED" | "TIMEOUT" | "HANDOFF" | "PAUSED" | "DISCONNECTED"): Promise<void>; }
 export interface AgentRunResult { runId: string; agentVersionId: string; context: { businessId: string; agentId: string; conversationId?: string; customerId?: string; traceId: string }; event: AgentEvent; mode: "LIVE" | "TEST"; actions: AgentAction[]; status: "COMPLETED" | "FAILED" | "CANCELLED"; usage: { inputTokens: number; outputTokens: number; toolCalls: number; steps: number; latencyMs: number }; timing: { startedAt: string; completedAt: string }; safeError?: { code: string; message: string; retryable: boolean }; debug?: { context: ContextBundle }; }
 
@@ -25,12 +26,16 @@ async function withinRuntimeLimit<T>(work: (signal: AbortSignal) => Promise<T>, 
 }
 
 export class AgentRuntime {
-  constructor(private readonly deps: { versions: AgentVersionService; contextEngine: ContextEngine; models: ModelProvider; tools: ToolRegistry; toolPolicy?: ToolPolicyEvaluator; actions: IdempotentActionExecutor; traces: TraceRepository; realtime: RealtimeBus; presence: RunLifecycleObserver }) {}
+  constructor(private readonly deps: { versions: AgentVersionService; contextEngine: ContextEngine; models: ModelProvider; tools: ToolRegistry; toolPolicy?: ToolPolicyEvaluator; actions: IdempotentActionExecutor; traces: TraceRepository; realtime: RealtimeBus; presence: RunLifecycleObserver; runtimeVersionSelector?: RuntimeVersionSelector }) {}
   async run(input: AgentRunInput): Promise<AgentRunResult> {
     const started = Date.now(); const startedAt = nowIso(); const runId = ulid(); const event = agentEventSchema.parse(input.event); const trusted = input.context;
     if (event.businessId !== trusted.businessId || input.agentId !== trusted.agentId) throw new Error("TRUSTED_SCOPE_MISMATCH");
     if (input.draftOnly && !(trusted.principal.kind === "system" && ["comment-processor", "evaluation"].includes(trusted.principal.service))) throw new Error("DRAFT_MODE_DENIED");
-    const version = await this.deps.versions.resolve(trusted, input.agentId, input.testVersionId); const usage = { inputTokens: 0, outputTokens: 0, toolCalls: 0, steps: 0, latencyMs: 0 }; let sequence = 0; let contextBundle: ContextBundle | undefined; const toolResults: SafeToolResult[] = []; const actions: AgentAction[] = [];
+    const resolvedVersion = await this.deps.versions.resolve(trusted, input.agentId, input.testVersionId);
+    const selectedVersion = this.deps.runtimeVersionSelector ? await this.deps.runtimeVersionSelector(trusted, structuredClone(resolvedVersion)) : resolvedVersion;
+    if (selectedVersion.id !== resolvedVersion.id || selectedVersion.businessId !== trusted.businessId || selectedVersion.agentId !== input.agentId || (selectedVersion.revision ?? 1) !== (resolvedVersion.revision ?? 1)) throw new Error("RUNTIME_VARIANT_SCOPE_MISMATCH");
+    const version = selectedVersion;
+    const usage = { inputTokens: 0, outputTokens: 0, toolCalls: 0, steps: 0, latencyMs: 0 }; let sequence = 0; let contextBundle: ContextBundle | undefined; const toolResults: SafeToolResult[] = []; const actions: AgentAction[] = [];
     const publish = (type: Parameters<RealtimeBus["publish"]>[0]["type"], payload: JsonValue) => this.deps.realtime.publish({ type, businessId: trusted.businessId, ...(trusted.conversationId ? { conversationId: trusted.conversationId } : {}), runId, traceId: trusted.traceId, payload });
     const step = async (kind: "CONTEXT" | "MODEL" | "TOOL" | "ACTION" | "STATE", status: "STARTED" | "COMPLETED" | "FAILED", safeFacts: JsonValue) => { await this.deps.traces.appendStep(trusted, { id: ulid(), businessId: trusted.businessId, runId, traceId: trusted.traceId, sequence: ++sequence, kind, status, safeFacts: redactSafe(safeFacts), occurredAt: nowIso() }); };
     const baseRun: AgentRunRecord = { id: runId, businessId: trusted.businessId, agentId: input.agentId, agentVersionId: version.id, ...(trusted.conversationId ? { conversationId: trusted.conversationId } : {}), eventId: event.id, traceId: trusted.traceId, status: "RUNNING", startedAt, completedAt: null, usage, safeError: null };
@@ -45,7 +50,8 @@ export class AgentRuntime {
         contextBundle = await this.deps.contextEngine.build(trusted, version, event, toolResults.filter((result) => result.safeOutput !== undefined).map((result) => result.safeOutput!));
         await step("CONTEXT", "COMPLETED", { itemCount: contextBundle.items.length, estimatedTokens: contextBundle.estimatedTokens, truncated: contextBundle.truncated, provenance: redactSafe(contextBundle.provenance) }); await publish("context.built", { itemCount: contextBundle.items.length, estimatedTokens: contextBundle.estimatedTokens, truncated: contextBundle.truncated });
         await step("MODEL", "STARTED", { provider: version.config.models.primary.provider, model: version.config.models.primary.model }); await publish("model.requested", { provider: version.config.models.primary.provider, model: version.config.models.primary.model });
-        const response = await withinRuntimeLimit((signal) => this.deps.models.generate({ runId, version, context: contextBundle!, tools: this.deps.tools.describe(input.draftOnly ? [] : version.config.enabledTools), safeToolResults: toolResults.filter((result) => result.safeOutput !== undefined).map((result) => ({ toolCallId: result.toolCallId, toolName: result.toolName, output: result.safeOutput! })), maxOutputTokens: version.config.runtimeLimits.maxOutputTokens, signal }), trusted.cancellationSignal, deadline - Date.now());
+        const experimentalToolsEnabled = !input.draftOnly && trusted.capabilityGrants.includes("experimental_tools.use");
+        const response = await withinRuntimeLimit((signal) => this.deps.models.generate({ runId, version, context: contextBundle!, tools: this.deps.tools.describe(input.draftOnly ? [] : version.config.enabledTools, experimentalToolsEnabled), safeToolResults: toolResults.filter((result) => result.safeOutput !== undefined).map((result) => ({ toolCallId: result.toolCallId, toolName: result.toolName, output: result.safeOutput! })), maxOutputTokens: version.config.runtimeLimits.maxOutputTokens, signal }), trusted.cancellationSignal, deadline - Date.now());
         usage.inputTokens += response.kind === "error" ? response.usage?.inputTokens ?? 0 : response.usage.inputTokens; usage.outputTokens += response.kind === "error" ? response.usage?.outputTokens ?? 0 : response.usage.outputTokens;
         if (response.kind === "error") throw Object.assign(new Error(response.error.message), { code: response.error.code, retryable: response.error.retryable });
         if (response.usage.outputTokens > version.config.runtimeLimits.maxOutputTokens) throw Object.assign(new Error("Output token limit exceeded"), { code: "OUTPUT_LIMIT" });
@@ -54,7 +60,7 @@ export class AgentRuntime {
         if (response.kind === "tool_calls") {
           if (input.draftOnly) throw Object.assign(new Error("Tools unavailable in draft mode"), { code: "DRAFT_TOOL_CALL_DENIED" });
           if (usage.toolCalls + response.calls.length > version.config.runtimeLimits.maxToolCalls) throw Object.assign(new Error("Tool call limit exceeded"), { code: "TOOL_LIMIT" });
-          for (const call of response.calls) { usage.toolCalls++; await publish("tool.requested", { toolName: call.name }); const result = await this.deps.tools.execute(call, { ...trusted, runId, approvedBrowserPolicy: version.config.browserPolicy }, version.config.toolPolicy, this.deps.toolPolicy ?? new DefaultToolPolicyEvaluator(), version.config.enabledTools); toolResults.push(result); await this.deps.traces.appendToolCall(trusted, { id: call.id, businessId: trusted.businessId, runId, traceId: trusted.traceId, toolName: call.name, status: result.status, safeInput: result.safeInput, ...(result.safeOutput !== undefined ? { safeOutput: result.safeOutput } : {}), ...(result.safeError ? { safeError: result.safeError } : {}), occurredAt: nowIso() }); await step("TOOL", result.status === "FAILED" ? "FAILED" : "COMPLETED", { toolName: call.name, status: result.status }); await publish("tool.completed", { toolName: call.name, status: result.status }); }
+          for (const call of response.calls) { usage.toolCalls++; await publish("tool.requested", { toolName: call.name }); const result = await this.deps.tools.execute(call, { ...trusted, runId, approvedBrowserPolicy: version.config.browserPolicy, experimentalToolsEnabled }, version.config.toolPolicy, this.deps.toolPolicy ?? new DefaultToolPolicyEvaluator(), version.config.enabledTools); toolResults.push(result); await this.deps.traces.appendToolCall(trusted, { id: call.id, businessId: trusted.businessId, runId, traceId: trusted.traceId, toolName: call.name, status: result.status, safeInput: result.safeInput, ...(result.safeOutput !== undefined ? { safeOutput: result.safeOutput } : {}), ...(result.safeError ? { safeError: result.safeError } : {}), occurredAt: nowIso() }); await step("TOOL", result.status === "FAILED" ? "FAILED" : "COMPLETED", { toolName: call.name, status: result.status }); await publish("tool.completed", { toolName: call.name, status: result.status }); }
           continue;
         }
         await this.deps.presence.transition(trusted, event.channel, "COMPOSING");

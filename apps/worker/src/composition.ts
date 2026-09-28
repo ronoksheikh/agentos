@@ -19,6 +19,7 @@ import { PostgresWebChatService, WebChatAdapter } from "@agentos/website-sdk";
 import { PostgresTrialService } from "@agentos/trial";
 import { PostgresFeatureFlags, runtimeCapabilityGrants } from "@agentos/feature-flags";
 import { FeatureFlaggedContextSource } from "./feature-flagged-context";
+import { featureFlaggedRuntimeSelector } from "./feature-flagged-runtime";
 import { ulid } from "ulid";
 import type { WorkerDependencies } from "./index";
 
@@ -70,6 +71,7 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
     tools,
     actions: new DeferredChannelActionExecutor(new PostgresRuntimeActionRepository(db), new PostgresRuntimeDomainActions(db)),
     traces: new PostgresRuntimeTraceRepository(db), realtime, presence,
+    runtimeVersionSelector: featureFlaggedRuntimeSelector(featureFlags),
   });
   const ruleCommentClassifier = new RuleCommentClassifier();
   const commentClassifier = process.env.OPENAI_CLASSIFIER_MODEL ? new OpenAICommentClassifier(openaiConfig, process.env.OPENAI_CLASSIFIER_MODEL, ruleCommentClassifier) : ruleCommentClassifier;

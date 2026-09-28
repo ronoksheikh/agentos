@@ -5,12 +5,13 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { ulid } from "ulid";
 import { AgentRuntime, AgentRuntimeEvaluationAdapter } from "@agentos/agent-runtime";
-import { AgentVersionService, runAgentEvaluation, type AgentEvaluationCase, type AgentVersion } from "@agentos/agents";
+import { AgentVersionService, runAgentEvaluation, selectRuntimeModelVariant, type AgentEvaluationCase, type AgentVersion } from "@agentos/agents";
 import { DeferredChannelActionExecutor } from "@agentos/actions";
 import { LayeredContextEngine } from "@agentos/context";
 import { InMemoryActionRepository, InMemoryTraceRepository } from "@agentos/persistence";
 import { CircuitBreakerModelProvider, OpenAIResponsesProvider } from "@agentos/models";
 import { PostgresAgentEvaluationRepository, PostgresAgentVersionRepository, PostgresRuntimeContextSource } from "@agentos/phase6";
+import { PostgresFeatureFlags } from "@agentos/feature-flags";
 import { InMemoryRealtimeBus } from "@agentos/realtime";
 import { createTrustedBusinessContext, ulidSchema } from "@agentos/shared";
 import { ToolRegistry } from "@agentos/tools";
@@ -106,6 +107,7 @@ export async function runAgentEvaluationAction(form: FormData) {
   try {
     if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY_REQUIRED");
     const versions = new PostgresAgentVersionRepository(database); const evaluations = new PostgresAgentEvaluationRepository(database);
+    const featureFlags = new PostgresFeatureFlags(database);
     const version = await versions.getVersion(trusted, versionId);
     if (!version || version.agentId !== agentId || !["DRAFT", "TEST"].includes(version.state)) throw new Error("VERSION_NOT_RUNNABLE");
     const provider = new CircuitBreakerModelProvider(new OpenAIResponsesProvider({ apiKey: process.env.OPENAI_API_KEY, ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}), ...(process.env.OPENAI_TIMEOUT_MS ? { timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS) } : {}), ...(process.env.OPENAI_FALLBACK_MODEL ? { fallbackModel: process.env.OPENAI_FALLBACK_MODEL } : {}) }));
@@ -118,6 +120,7 @@ export async function runAgentEvaluationAction(form: FormData) {
       traces: new InMemoryTraceRepository(),
       realtime: new InMemoryRealtimeBus(),
       presence: { async transition() {} },
+      runtimeVersionSelector: async (context, candidate) => selectRuntimeModelVariant(candidate, await featureFlags.effective(context.businessId, "runtime_variant")),
     }));
     const run = await runAgentEvaluation({ version, results: evaluations, execute: (candidate, scenario) => adapter.execute(candidate, scenario) });
     await database.insert(auditLogs).values({ id: ulid(), businessId, actorId, action: "agent.version.evaluated", targetType: "agent_version", targetId: versionId, safeMetadata: { runId: run.id, revision: run.versionRevision ?? 1, suiteVersion: run.suiteVersion, status: run.status, passedCases: run.passedCases, failedCases: run.failedCases } });

@@ -13,7 +13,6 @@ export async function changeFeatureFlagAction(form: FormData) {
     const access = await requireAgencyPage("feature_flag.manage");
     const actor = { userId: access.session.user.id, grants: agencyCapabilities(agencyRoleSchema.parse(access.membership.role), access.membership.capabilities) };
     const key = featureFlagKeySchema.parse(form.get("key"));
-    if (key !== "browser" && key !== "comment_ai") throw new Error("FLAG_NOT_OPERATIVE");
     const revision = Number(form.get("expectedRevision"));
     if (form.get("scope") === "tenant") {
       const id = ulidSchema.parse(businessId);

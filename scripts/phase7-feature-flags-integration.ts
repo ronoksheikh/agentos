@@ -15,7 +15,8 @@ try {
   await db.insert(dbs.businesses).values([{ id: a, name: "Flags A" }, { id: b, name: "Flags B" }]);
   await db.insert(dbs.users).values({ id: userId, name: "Agency flags operator", email: `${userId}@example.test` });
   const flags = new PostgresFeatureFlags(db);
-  assert.equal(await flags.effective(a, "browser"), true); assert.equal(await flags.effective(a, "comment_ai"), false); assert.equal(await flags.effective(a, "advanced_memory"), false);
+  assert.equal(await flags.effective(a, "browser"), true); assert.equal(await flags.effective(a, "comment_ai"), false); assert.equal(await flags.effective(a, "advanced_memory"), false); assert.equal(await flags.effective(a, "experimental_tools"), false); assert.equal(await flags.effective(a, "runtime_variant"), false);
+  assert.equal((await runtimeCapabilityGrants(flags, a, true)).includes("experimental_tools.use"), false);
   assert.ok((await runtimeCapabilityGrants(flags, a, true)).includes("browser.use"));
   assert.equal((await runtimeCapabilityGrants(flags, a, false)).includes("browser.use"), false);
   assert.equal((await flags.set(actor, { key: "browser", enabled: false, expectedRevision: 0 })).revision, 1);
@@ -34,10 +35,20 @@ try {
   assert.equal(await flags.effective(a, "advanced_memory"), true); assert.equal(await flags.effective(b, "advanced_memory"), true);
   await flags.set(actor, { businessId: a, key: "advanced_memory", enabled: false, expectedRevision: 0 });
   assert.equal(await flags.effective(a, "advanced_memory"), false); assert.equal(await flags.effective(b, "advanced_memory"), true);
+  await flags.set(actor, { key: "experimental_tools", enabled: true, expectedRevision: 0 });
+  assert.equal(await flags.effective(a, "experimental_tools"), true); assert.equal(await flags.effective(b, "experimental_tools"), true);
+  assert.ok((await runtimeCapabilityGrants(flags, a, true)).includes("experimental_tools.use"));
+  await flags.set(actor, { businessId: a, key: "experimental_tools", enabled: false, expectedRevision: 0 });
+  assert.equal(await flags.effective(a, "experimental_tools"), false); assert.equal(await flags.effective(b, "experimental_tools"), true);
+  assert.equal((await runtimeCapabilityGrants(flags, a, true)).includes("experimental_tools.use"), false);
+  await flags.set(actor, { key: "runtime_variant", enabled: true, expectedRevision: 0 });
+  assert.equal(await flags.effective(a, "runtime_variant"), true); assert.equal(await flags.effective(b, "runtime_variant"), true);
+  await flags.set(actor, { businessId: a, key: "runtime_variant", enabled: false, expectedRevision: 0 });
+  assert.equal(await flags.effective(a, "runtime_variant"), false); assert.equal(await flags.effective(b, "runtime_variant"), true);
   const listed = await flags.list(actor, a); assert.equal(listed.find((item) => item.key === "browser")?.tenant?.enabled, true);
   await flags.clearTenant(actor, a, "browser", 1); assert.equal(await flags.effective(a, "browser"), false);
   await assert.rejects(flags.clearTenant(actor, a, "browser", 1), /CONCURRENT_EDIT/);
   await assert.rejects(flags.set({ userId, grants: [] }, { key: "browser", enabled: true, expectedRevision: 1 }), /FORBIDDEN/);
   assert.ok((await db.select().from(dbs.auditLogs).where(eq(dbs.auditLogs.actorId, userId))).length >= 3);
-  console.log("Phase 7 flags: global defaults, tenant overrides, advanced-memory precedence, revision conflicts, authorization, and audit passed");
+  console.log("Phase 7 flags: global defaults, tenant overrides, experimental-tool grants, runtime-variant resolution, advanced-memory precedence, revision conflicts, authorization, and audit passed");
 } finally { await pool.end(); }

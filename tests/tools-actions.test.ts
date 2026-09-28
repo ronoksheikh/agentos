@@ -34,6 +34,17 @@ describe("tools and actions", () => {
     expect(result.status).toBe("FAILED"); expect(executions).toBe(0);
   });
 
+  test("keeps experimental tools hidden and denied until the runtime grant is present", async () => {
+    const registry = new ToolRegistry(); let executions = 0;
+    registry.register({ name: "experimental_read", description: "test", category: "demo", experimental: true, safetyClass: "READ", requiredCapabilities: [], inputSchema: z.object({}), outputSchema: z.object({ ok: z.boolean() }), redaction: { unsafeInputKeys: [], unsafeOutputKeys: [] }, async execute() { executions++; return { ok: true }; } });
+    const context = { ...trusted(), runId: ulid() }; const policy = new DefaultToolPolicyEvaluator();
+    expect(registry.describe(["experimental_read"])).toHaveLength(0);
+    expect(registry.describe(["experimental_read"], true)).toHaveLength(1);
+    expect((await registry.execute({ id: "off", name: "experimental_read", arguments: {} }, context, {}, policy, ["experimental_read"])).status).toBe("DENIED");
+    expect((await registry.execute({ id: "on", name: "experimental_read", arguments: {} }, { ...context, experimentalToolsEnabled: true }, {}, policy, ["experimental_read"])).status).toBe("COMPLETED");
+    expect(executions).toBe(1);
+  });
+
   test("reserves side effects idempotently and applies internal state once", async () => {
     const memories = new MemoryService(new InMemoryMemoryRepository()); const store = new InMemoryConversationStore(memories); store.seed({ businessId: ids.businessA, conversationId: ids.conversation, messages: [], pins: [], pendingGoals: [], announcements: [] });
     const repository = new InMemoryActionRepository(); const executor = new DeferredChannelActionExecutor(repository, store); const action = { id: ulid(), schemaVersion: "1.0" as const, type: "Remember" as const, idempotencyKey: "memory:1", memoryType: "preference", content: "blue", importance: 0.8, confidence: 0.9, sourceMessageIds: [] };

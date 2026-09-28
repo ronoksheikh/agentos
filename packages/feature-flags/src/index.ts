@@ -54,5 +54,5 @@ export class PostgresFeatureFlags {
 }
 
 export async function runtimeCapabilityGrants(flags: PostgresFeatureFlags, businessId: string, browserAvailable: boolean) {
-  return ["conversation.read", "handoff.request", ...(browserAvailable && await flags.effective(businessId, "browser") ? ["browser.use"] : [])];
+  return ["conversation.read", "handoff.request", ...(browserAvailable && await flags.effective(businessId, "browser") ? ["browser.use"] : []), ...(await flags.effective(businessId, "experimental_tools") ? ["experimental_tools.use"] : [])];
 }

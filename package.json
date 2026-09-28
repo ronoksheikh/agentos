@@ -16,6 +16,7 @@
     "db:phase7-offboard-prepare": "bun scripts/phase7-offboard-integration.ts prepare",
     "db:phase7-offboard-verify": "bun scripts/phase7-offboard-integration.ts verify",
     "db:phase7-evaluations": "bun scripts/phase7-evaluations-integration.ts",
+    "db:phase7-feature-flags": "bun scripts/phase7-feature-flags-integration.ts",
     "db:phase7-usage": "bun scripts/phase7-usage-integration.ts",
     "db:phase7-invitations": "bun scripts/phase7-agency-invitation-integration.ts",
     "db:phase7-retention-policy": "bun scripts/phase7-retention-policy-integration.ts",
