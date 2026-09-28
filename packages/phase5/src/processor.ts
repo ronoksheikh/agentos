@@ -126,10 +126,17 @@ export class Phase5Processor {
     const runtimeEvent = toRuntimeEvent({ ...last, payload: { ...last.payload, text: messages.map((message) => message.text ?? "[attachment]").join("\n"), messageId: batch.messageIds.at(-1)!, attachmentIds } }, batch.upperSequence);
     await this.publish("batch.formed", context, { count: messages.length });
     const result = await this.deps.runtime.run({ context, event: runtimeEvent, agentId: context.agentId!, deliveryManaged: true });
-    if (result.status !== "COMPLETED") { if (result.safeError?.retryable) { await store.db.update(dbs.messageBatches).set({ state: "BUFFERING", runId: result.runId, dueAt: new Date(), updatedAt: new Date() }).where(eq(dbs.messageBatches.id, batch.id)); throw Object.assign(new Error("Retryable run failure"), { code: result.safeError.code }); } await store.completeBatch(work.businessId, batch.id, result.runId, result.status === "CANCELLED" ? "CANCELLED" : "FAILED", result.safeError?.code); return; }
+    if (result.status !== "COMPLETED") { if (result.safeError?.retryable) { await store.db.update(dbs.messageBatches).set({ state: "BUFFERING", runId: result.runId, dueAt: new Date(), updatedAt: new Date() }).where(eq(dbs.messageBatches.id, batch.id)); throw Object.assign(new Error("Retryable run failure"), { code: result.safeError.code }); } const failed = result.status !== "CANCELLED"; await store.completeBatch(work.businessId, batch.id, result.runId, failed ? "FAILED" : "CANCELLED", result.safeError?.code); if (failed) await this.notifyRunFailure(work.businessId, result.runId, batch.conversationId, result.safeError?.code ?? "RUN_FAILED"); return; }
     const count = await this.scheduleActions(result, context, batch.upperSequence, messages.length, batch.firstAt, lease, work.priority === 1);
     await store.completeBatch(work.businessId, batch.id, result.runId, count ? "COMPLETED" : "SUPPRESSED", count ? undefined : "NO_FRESH_DELIVERY");
     for (const eventId of batch.eventIds) await store.eventState(work.businessId, eventId, "PROCESSED");
+  }
+  private async notifyRunFailure(businessId: string, runId: string, conversationId: string, safeCode: string) {
+    await this.deps.store.db.transaction(async (tx) => {
+      const members = await tx.select({ userId: dbs.businessMemberships.userId }).from(dbs.businessMemberships).where(eq(dbs.businessMemberships.businessId, businessId));
+      if (!members.length) return;
+      await tx.insert(dbs.notifications).values(members.map(({ userId }) => ({ id: ulid(), businessId, userId, conversationId, type: "AGENT_RUN_FAILED", severity: "WARNING", dedupeKey: `run:${runId}:failed`, safePayload: { safeCode } }))).onConflictDoNothing();
+    });
   }
   private async deliver(businessId: string, effectId: string, traceId: string, signal: AbortSignal, lease: RedisConversationLease | null, workId: string, attempt: number, maxAttempts: number) {
     const effect = await this.deps.store.getEffect(businessId, effectId);

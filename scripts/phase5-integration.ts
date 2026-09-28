@@ -35,6 +35,7 @@ try {
   const secondBusiness = ulid(); const connectionId = ulid(); const userId = ulid(); const fixture = createAgentFixture();
   await db.insert(schema.businesses).values([{ id: ids.businessA, name: "Phase5 A", state: "ACTIVE" }, { id: secondBusiness, name: "Phase5 B", state: "ACTIVE" }]);
   await db.insert(schema.users).values({ id: userId, name: "Phase5 Tester", email: `${userId}@example.test` });
+  await db.insert(schema.businessMemberships).values({ id: ulid(), businessId: ids.businessA, userId, role: "OWNER" });
   await db.insert(schema.agents).values({ id: ids.agent, businessId: ids.businessA, name: "Phase5 Agent", activeVersionId: ids.version });
   await db.insert(schema.agentVersions).values({ id: ids.version, businessId: ids.businessA, agentId: ids.agent, version: 1, state: "PUBLISHED", config: fixture.version.config, createdBy: userId });
   await db.insert(schema.customers).values({ id: ids.customer, businessId: ids.businessA });
@@ -92,6 +93,17 @@ try {
   assert.equal(adapter.executed.length, priorSends + 1, "reconciliation must not resend");
   await stop();
   assert.equal((await db.select().from(schema.serviceHeartbeats).where(eq(schema.serviceHeartbeats.service, "agentos-worker"))).length, 0);
+
+  const failedConversation = ulid(); await db.insert(schema.conversations).values({ id: failedConversation, businessId: ids.businessA, customerId: ids.customer, agentId: ids.agent, channel: WEB_CHAT_CHANNEL });
+  conversations.seed({ businessId: ids.businessA, conversationId: failedConversation, customerId: ids.customer, messages: [], pins: [], pendingGoals: [], announcements: [] });
+  const failedRuntime = new AgentRuntime({ versions: new AgentVersionService(versions), contextEngine: new LayeredContextEngine(conversations), models: new FakeModelProvider([{ kind: "error", error: { code: "UNAVAILABLE", message: "Run failed safely", retryable: false } }]), tools: new ToolRegistry(), actions: new DeferredChannelActionExecutor(new InMemoryActionRepository(), conversations), traces: new InMemoryTraceRepository(), realtime: new InMemoryRealtimeBus(), presence });
+  const failedTrusted = createTrustedBusinessContext({ businessId: ids.businessA, principal: { kind: "adapter", connectionId: site.id }, source: "verified_adapter", agentId: ids.agent, conversationId: failedConversation, customerId: ids.customer, traceId: ulid(), capabilityGrants: ["conversation.read", "handoff.request"] });
+  await gateway.accept(adapter, await request("Need a person", ulid()), failedTrusted, { quietMs: 100, maxWaitMs: 300 }); await pause(120);
+  const stopFailed = await startPhase5Worker({ db, redisUrl, runtime: failedRuntime, registry, presence });
+  await until("terminal run failure notification", async () => (await db.select().from(schema.notifications).where(and(eq(schema.notifications.businessId, ids.businessA), eq(schema.notifications.type, "AGENT_RUN_FAILED"), eq(schema.notifications.conversationId, failedConversation)))).length === 1);
+  const failedNotice = (await db.select().from(schema.notifications).where(and(eq(schema.notifications.businessId, ids.businessA), eq(schema.notifications.type, "AGENT_RUN_FAILED"), eq(schema.notifications.conversationId, failedConversation))))[0]!;
+  assert.deepEqual(failedNotice.safePayload, { safeCode: "UNAVAILABLE" });
+  await stopFailed();
 
   // PostgreSQL order writes hold the conversation row and reject an older worker sequence.
   const durableOrders = new PostgresOrderRepository(db);
@@ -196,5 +208,5 @@ try {
   assert.equal((await db.select().from(schema.rawInboundEvents).where(eq(schema.rawInboundEvents.id, messages[0]!.rawEventSourceRef!)))[0]!.state, "PURGED");
   assert.equal((await store.getEvent(ids.businessA, batches[0]!.eventIds[0]!)).type, "message.received");
   await redisQueues.close();
-  console.log("Phase 5 PostgreSQL/Redis integration passed: dedupe, ordered batching, fake adapter delivery, notification retry, leases, 40-conversation fairness, recovery, replay authorization, and one-shot goals.");
+  console.log("Phase 5 PostgreSQL/Redis integration passed: dedupe, ordered batching, fake adapter delivery, terminal run-failure notification, notification retry, leases, 40-conversation fairness, recovery, replay authorization, and one-shot goals.");
 } finally { await pool.end(); }
