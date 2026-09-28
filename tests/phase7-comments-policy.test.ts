@@ -11,6 +11,7 @@ describe("Phase 7 comment classification and policy", () => {
     const scam = await classifier.classify({ text: "Send your password to claim your prize" });
     expect(scam.category).toBe("scam"); expect(policy.evaluate(scam, ready)).toEqual({ outcome: "HIDE", reviewRequired: true, safeReason: "HIGH_CONFIDENCE_SPAM" });
     expect(policy.evaluate(scam, { ...ready, allowDelete: true }).outcome).toBe("HIDE");
+    expect(policy.evaluate({ ...scam, signals: ["model_label_review_only"], requiresHuman: true, moderationRecommendation: "review" }, ready)).toEqual({ outcome: "KEEP", reviewRequired: true, safeReason: "MODEL_CLASSIFICATION_REVIEW_ONLY" });
     expect(JSON.stringify(scam.signals)).not.toContain("password");
     expect(policy.evaluate(scam, { ...ready, verifiedHide: false }).outcome).toBe("HANDOFF");
     expect(policy.evaluate(price, { ...ready, enabled: false }).outcome).toBe("KEEP");

@@ -49,6 +49,7 @@ export class CommentPolicyEngine {
     if (!input.businessEligible) return result("KEEP", true, "BUSINESS_SERVICE_INACTIVE");
     if (!input.channelConnected || !input.verifiedRead || !input.postScopeVerified) return result("KEEP", true, "COMMENT_SCOPE_UNVERIFIED");
     if (!input.verifiedExternalAuthor) return result("KEEP", true, "COMMENT_AUTHOR_UNVERIFIED");
+    if (classification.signals.includes("model_label_review_only")) return result("KEEP", true, "MODEL_CLASSIFICATION_REVIEW_ONLY");
     if (classification.category === "uncertain" || classification.confidence < input.minimumConfidence) return result("KEEP", true, "CLASSIFICATION_REVIEW");
     if (input.ownership === "HUMAN_ACTIVE" || input.ownership === "HANDOFF_REQUESTED") return result("HANDOFF", true, "HUMAN_OWNS_CONVERSATION");
     if ((classification.category === "spam" || classification.category === "scam") && input.autoHide && input.verifiedHide && input.commentCanHide && !input.commentHidden) return result("HIDE", classification.requiresHuman, "HIGH_CONFIDENCE_SPAM");
