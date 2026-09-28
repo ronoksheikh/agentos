@@ -1,0 +1,36 @@
+import { strict as assert } from "node:assert";
+import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { ulid } from "ulid";
+import * as db from "@agentos/database";
+import { readAgencyUsage } from "../apps/admin/lib/usage";
+
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString || !new URL(connectionString).pathname.match(/^\/agentos_phase7_usage_[a-z0-9_]+$/i)) throw new Error("USAGE_INTEGRATION_REQUIRES_DISPOSABLE_DATABASE");
+const pool = new Pool({ connectionString });
+const database = drizzle(pool);
+const businessId = ulid(); const agentId = ulid(); const versionId = ulid(); const userId = ulid(); const runId = ulid(); const sessionId = ulid();
+const businessName = `Usage Drill ${businessId}`; const agentName = `Usage Agent ${agentId}`;
+
+try {
+  await database.insert(db.users).values({ id: userId, name: "Usage Drill", email: `${userId}@example.invalid` });
+  await database.insert(db.businesses).values({ id: businessId, name: businessName });
+  await database.insert(db.agents).values({ id: agentId, businessId, name: agentName });
+  await database.insert(db.agentVersions).values({ id: versionId, businessId, agentId, version: 1, state: "PUBLISHED", config: {}, createdBy: userId });
+  await database.insert(db.agentRuns).values({ id: runId, businessId, agentId, agentVersionId: versionId, eventId: ulid(), traceId: ulid(), status: "COMPLETED", startedAt: new Date(), completedAt: new Date(), usage: { inputTokens: 12, outputTokens: 7, toolCalls: 1, steps: 1, latencyMs: 20 } });
+  await database.insert(db.agentSteps).values({ id: ulid(), businessId, runId, traceId: ulid(), sequence: 1, kind: "MODEL", status: "COMPLETED", safeFacts: { provider: "integration-provider", model: "integration-model", usage: { inputTokens: 12, outputTokens: 7, totalTokens: 19 } }, occurredAt: new Date() });
+  await database.insert(db.toolCalls).values({ id: ulid(), businessId, runId, traceId: ulid(), toolName: "integration_tool", status: "SUCCEEDED", safeInput: {}, occurredAt: new Date() });
+  await database.insert(db.browserSessions).values({ id: sessionId, businessId, runId, ownerId: userId, profileId: "usage-drill", safeUrl: "https://example.invalid/", status: "CLOSED", expiresAt: new Date(Date.now() + 60_000) });
+  await database.insert(db.browserRuns).values({ id: ulid(), businessId, sessionId, runId, action: "extract", status: "COMPLETED", occurredAt: new Date() });
+
+  const usage = await readAgencyUsage(database, new Date(Date.now() - 30 * 24 * 60 * 60_000));
+  assert.equal(Number(usage.totals.runs), 1);
+  assert.equal(Number(usage.totals.inputTokens), 12);
+  assert.equal(Number(usage.totals.outputTokens), 7);
+  assert.equal(Number(usage.totals.toolCalls), 1);
+  assert.ok(usage.modelRows.some((row) => row.business === businessName && row.agent === agentName && row.provider === "integration-provider" && row.model === "integration-model" && Number(row.inputTokens) === 12 && Number(row.outputTokens) === 7));
+  assert.ok(usage.runRows.some((row) => row.runId === runId && Number(row.inputTokens) === 12));
+  assert.ok(usage.toolRows.some((row) => row.business === businessName && row.tool === "integration_tool" && Number(row.calls) === 1));
+  assert.ok(usage.browserRows.some((row) => row.business === businessName && row.action === "extract" && Number(row.runs) === 1));
+  console.log("Phase 7 agency usage: run and token totals, model grouping, tool counts, browser activity, and tenant joins passed");
+} finally { await pool.end(); }

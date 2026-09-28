@@ -16,6 +16,7 @@
     "db:phase7-offboard-prepare": "bun scripts/phase7-offboard-integration.ts prepare",
     "db:phase7-offboard-verify": "bun scripts/phase7-offboard-integration.ts verify",
     "db:phase7-evaluations": "bun scripts/phase7-evaluations-integration.ts",
+    "db:phase7-usage": "bun scripts/phase7-usage-integration.ts",
     "db:phase7-retention-policy": "bun scripts/phase7-retention-policy-integration.ts",
     "db:phase6-messenger": "bun scripts/phase6-messenger-integration.ts",
     "db:migrate": "drizzle-kit migrate",
