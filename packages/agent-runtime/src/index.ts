@@ -30,7 +30,7 @@ export class AgentRuntime {
   async run(input: AgentRunInput): Promise<AgentRunResult> {
     const started = Date.now(); const startedAt = nowIso(); const runId = ulid(); const event = agentEventSchema.parse(input.event); const trusted = input.context;
     if (event.businessId !== trusted.businessId || input.agentId !== trusted.agentId) throw new Error("TRUSTED_SCOPE_MISMATCH");
-    if (input.draftOnly && !(trusted.principal.kind === "system" && ["comment-processor", "evaluation"].includes(trusted.principal.service))) throw new Error("DRAFT_MODE_DENIED");
+    if (input.draftOnly && !(trusted.principal.kind === "system" && ["comment-processor", "evaluation", "playground"].includes(trusted.principal.service))) throw new Error("DRAFT_MODE_DENIED");
     const resolvedVersion = await this.deps.versions.resolve(trusted, input.agentId, input.testVersionId);
     const selectedVersion = this.deps.runtimeVersionSelector ? await this.deps.runtimeVersionSelector(trusted, structuredClone(resolvedVersion)) : resolvedVersion;
     if (selectedVersion.id !== resolvedVersion.id || selectedVersion.businessId !== trusted.businessId || selectedVersion.agentId !== input.agentId || (selectedVersion.revision ?? 1) !== (resolvedVersion.revision ?? 1)) throw new Error("RUNTIME_VARIANT_SCOPE_MISMATCH");
@@ -75,3 +75,4 @@ export class AgentRuntime {
 }
 
 export { AgentRuntimeEvaluationAdapter } from "./evaluation";
+export { AgentRuntimePlaygroundAdapter, playgroundInputSchema, type PlaygroundInput, type PlaygroundResult } from "./playground";
