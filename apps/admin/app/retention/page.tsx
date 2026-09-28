@@ -19,6 +19,7 @@ const fields = [
   ["orderNotesDays", "Order note text (days)"],
   ["resolvedGoalsDays", "Closed goal descriptions and triggers (days)"],
   ["expiredAnnouncementsDays", "Expired announcement content (days)"],
+  ["auditMetadataDays", "Audit event metadata (days)"],
 ] as const;
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ business?: string; notice?: string }> }) {
@@ -36,7 +37,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ b
         <NativeSelect name="enabled" label="Scheduled content scrubbing" defaultValue={String(policy.enabled)} data={[{ value: "false", label: "Disabled" }, { value: "true", label: "Enabled" }]} />
         {fields.map(([name, label]) => <TextInput key={name} name={name} type="number" min={1} max={3650} label={label} description="Leave empty to retain this category." defaultValue={policy[name] ?? ""} />)}
         <TextInput name="confirmScrub" label={'If enabling, type "ENABLE CONTENT SCRUBBING" to confirm'} description="Required only when turning scheduled scrubbing on." />
-        <Alert color="orange" title="Content is irreversibly redacted">Scrubbing replaces old content while keeping identifiers, delivery state, financial order records, active goals, current announcements, and audit history. A backup may retain the original content until that backup expires. Trial expiration does not enable or run these rules.</Alert>
+        <Alert color="orange" title="Content is irreversibly redacted">Scrubbing replaces old content while keeping identifiers, delivery state, financial order records, active goals, current announcements, audit event identity, and retention-policy change metadata. A backup may retain the original content until that backup expires. Trial expiration does not enable or run these rules.</Alert>
         <Button type="submit" w="fit-content">Save retention policy</Button>
       </Stack></form></Card>}
   </Stack></DashboardShell>;

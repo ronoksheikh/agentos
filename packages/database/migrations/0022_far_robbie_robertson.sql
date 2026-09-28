@@ -1,0 +1,1 @@
+ALTER TABLE "business_retention_policies" ADD COLUMN "audit_metadata_days" integer;

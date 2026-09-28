@@ -9,12 +9,16 @@ import { PostgresBusinessContentRetention, PostgresBusinessRetentionPolicies } f
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL_REQUIRED");
 const pool = new Pool({ connectionString: process.env.DATABASE_URL }); const database = drizzle(pool);
 const businessA = ulid(); const businessB = ulid(); const userId = ulid(); const conversationA = ulid(); const conversationB = ulid(); const customerA = ulid(); const customerB = ulid(); const identityA = ulid(); const identityB = ulid(); const linkA = ulid(); const memoryA = ulid(); const memoryB = ulid(); const summaryA = ulid(); const summaryB = ulid(); const pinA = ulid(); const pinB = ulid(); const noteA = ulid(); const noteB = ulid(); const old = new Date(Date.now() - 3 * 86_400_000); const now = new Date();
-const messageA = ulid(); const messageB = ulid(); const processedEvent = ulid(); const pendingEvent = ulid(); const otherEvent = ulid(); const realtimeA = ulid(); const realtimeB = ulid(); const projectionA = ulid(); const projectionB = ulid(); const pendingOrderA = ulid(); const orderA = ulid(); const orderNoteA = ulid(); const pendingOrderB = ulid(); const orderB = ulid(); const orderNoteB = ulid(); const resolvedGoalA = ulid(); const pendingGoalA = ulid(); const resolvedGoalB = ulid(); const announcementA = ulid(); const currentAnnouncementA = ulid(); const announcementB = ulid();
+const messageA = ulid(); const messageB = ulid(); const processedEvent = ulid(); const pendingEvent = ulid(); const otherEvent = ulid(); const realtimeA = ulid(); const realtimeB = ulid(); const projectionA = ulid(); const projectionB = ulid(); const pendingOrderA = ulid(); const orderA = ulid(); const orderNoteA = ulid(); const pendingOrderB = ulid(); const orderB = ulid(); const orderNoteB = ulid(); const resolvedGoalA = ulid(); const pendingGoalA = ulid(); const resolvedGoalB = ulid(); const announcementA = ulid(); const currentAnnouncementA = ulid(); const announcementB = ulid(); const auditA = ulid(); const auditB = ulid();
 const actor = { userId, grants: ["retention.manage"], allowedBusinessIds: new Set([businessA]) };
 const policies = new PostgresBusinessRetentionPolicies(database);
 try {
   await database.insert(dbs.businesses).values([{ id: businessA, name: "Retention A" }, { id: businessB, name: "Retention B" }]);
   await database.insert(dbs.users).values({ id: userId, name: "Retention operator", email: `${userId}@example.test` });
+  await database.insert(dbs.auditLogs).values([
+    { id: auditA, businessId: businessA, actorId: userId, action: "customer.profile_updated", targetType: "customer", targetId: customerA, safeMetadata: { privateDetail: "old audit metadata" }, occurredAt: old },
+    { id: auditB, businessId: businessB, actorId: userId, action: "customer.profile_updated", targetType: "customer", targetId: customerB, safeMetadata: { privateDetail: "neighbor audit metadata" }, occurredAt: old },
+  ]);
   await database.insert(dbs.conversations).values([{ id: conversationA, businessId: businessA, channel: "test" }, { id: conversationB, businessId: businessB, channel: "test" }]);
   await database.insert(dbs.pendingOrders).values({ id: pendingOrderA, businessId: businessA, conversationId: conversationA, channel: "test", state: "CREATED", confirmation: "GIVEN", expiresAt: new Date(now.getTime() + 86_400_000), createdAt: old, updatedAt: old });
   await database.insert(dbs.pendingOrders).values({ id: pendingOrderB, businessId: businessB, conversationId: conversationB, channel: "test", state: "CREATED", confirmation: "GIVEN", expiresAt: new Date(now.getTime() + 86_400_000), createdAt: old, updatedAt: old });
@@ -54,15 +58,15 @@ try {
     { id: projectionB, sourceEventId: ulid(), businessId: businessB, traceId: "projection-b", sequence: 1, type: "message.created", safePayload: { text: "private projection B" }, occurredAt: old },
   ]);
   assert.equal((await policies.get(actor, businessA)).enabled, false);
-  await assert.rejects(policies.set(actor, { businessId: businessA, enabled: true, expectedRevision: 0, messagesDays: 1, eventPayloadDays: 1, traceDetailsDays: null, realtimePayloadDays: 1, browserHistoryDays: null, commentTextDays: null, customerContentDays: 1, orderNotesDays: 1, resolvedGoalsDays: 1, expiredAnnouncementsDays: 1 }), /RETENTION_CONFIRMATION_REQUIRED/);
-  await assert.rejects(policies.set(actor, { businessId: businessA, enabled: true, expectedRevision: 0, messagesDays: null, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null, customerContentDays: null, orderNotesDays: null, resolvedGoalsDays: null, expiredAnnouncementsDays: null, confirmScrub: "ENABLE CONTENT SCRUBBING" }), /RETENTION_RULE_REQUIRED/);
-  await assert.rejects(policies.set(actor, { businessId: businessB, enabled: true, expectedRevision: 0, messagesDays: 1, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null, customerContentDays: null, orderNotesDays: null, resolvedGoalsDays: null, expiredAnnouncementsDays: null, confirmScrub: "ENABLE CONTENT SCRUBBING" }), /FORBIDDEN/);
-  const policy = await policies.set(actor, { businessId: businessA, enabled: true, expectedRevision: 0, messagesDays: 1, eventPayloadDays: 1, traceDetailsDays: null, realtimePayloadDays: 1, browserHistoryDays: null, commentTextDays: null, customerContentDays: 1, orderNotesDays: 1, resolvedGoalsDays: 1, expiredAnnouncementsDays: 1, confirmScrub: "ENABLE CONTENT SCRUBBING" });
+  await assert.rejects(policies.set(actor, { businessId: businessA, enabled: true, expectedRevision: 0, messagesDays: 1, eventPayloadDays: 1, traceDetailsDays: null, realtimePayloadDays: 1, browserHistoryDays: null, commentTextDays: null, customerContentDays: 1, orderNotesDays: 1, resolvedGoalsDays: 1, expiredAnnouncementsDays: 1, auditMetadataDays: 1 }), /RETENTION_CONFIRMATION_REQUIRED/);
+  await assert.rejects(policies.set(actor, { businessId: businessA, enabled: true, expectedRevision: 0, messagesDays: null, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null, customerContentDays: null, orderNotesDays: null, resolvedGoalsDays: null, expiredAnnouncementsDays: null, auditMetadataDays: null, confirmScrub: "ENABLE CONTENT SCRUBBING" }), /RETENTION_RULE_REQUIRED/);
+  await assert.rejects(policies.set(actor, { businessId: businessB, enabled: true, expectedRevision: 0, messagesDays: 1, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null, customerContentDays: null, orderNotesDays: null, resolvedGoalsDays: null, expiredAnnouncementsDays: null, auditMetadataDays: null, confirmScrub: "ENABLE CONTENT SCRUBBING" }), /FORBIDDEN/);
+  const policy = await policies.set(actor, { businessId: businessA, enabled: true, expectedRevision: 0, messagesDays: 1, eventPayloadDays: 1, traceDetailsDays: null, realtimePayloadDays: 1, browserHistoryDays: null, commentTextDays: null, customerContentDays: 1, orderNotesDays: 1, resolvedGoalsDays: 1, expiredAnnouncementsDays: 1, auditMetadataDays: 1, confirmScrub: "ENABLE CONTENT SCRUBBING" });
   assert.equal(policy.revision, 1);
-  await assert.rejects(policies.set(actor, { businessId: businessA, enabled: false, expectedRevision: 0, messagesDays: 1, eventPayloadDays: 1, traceDetailsDays: null, realtimePayloadDays: 1, browserHistoryDays: null, commentTextDays: null, customerContentDays: 1, orderNotesDays: 1, resolvedGoalsDays: 1, expiredAnnouncementsDays: 1 }), /CONCURRENT_EDIT/);
+  await assert.rejects(policies.set(actor, { businessId: businessA, enabled: false, expectedRevision: 0, messagesDays: 1, eventPayloadDays: 1, traceDetailsDays: null, realtimePayloadDays: 1, browserHistoryDays: null, commentTextDays: null, customerContentDays: 1, orderNotesDays: 1, resolvedGoalsDays: 1, expiredAnnouncementsDays: 1, auditMetadataDays: 1 }), /CONCURRENT_EDIT/);
 
   const retention = new PostgresBusinessContentRetention(database);
-  assert.deepEqual(await retention.sweep(now, 20), { batches: 7 });
+  assert.deepEqual(await retention.sweep(now, 20), { batches: 8 });
   assert.equal((await database.select({ text: dbs.messages.text }).from(dbs.messages).where(eq(dbs.messages.id, messageA)))[0]?.text, null);
   assert.equal((await database.select({ text: dbs.messages.text }).from(dbs.messages).where(eq(dbs.messages.id, messageB)))[0]?.text, "private message B");
   assert.deepEqual((await database.select({ payload: dbs.universalEvents.payload }).from(dbs.universalEvents).where(eq(dbs.universalEvents.id, processedEvent)))[0]?.payload, { retentionRedacted: true });
@@ -87,13 +91,16 @@ try {
   assert.deepEqual((await database.select({ content: dbs.businessAnnouncements.content, channels: dbs.businessAnnouncements.channels, active: dbs.businessAnnouncements.active }).from(dbs.businessAnnouncements).where(eq(dbs.businessAnnouncements.id, announcementA)))[0], { content: "[retention redacted]", channels: [], active: false });
   assert.equal((await database.select({ content: dbs.businessAnnouncements.content }).from(dbs.businessAnnouncements).where(eq(dbs.businessAnnouncements.id, currentAnnouncementA)))[0]?.content, "current announcement stays");
   assert.equal((await database.select({ content: dbs.businessAnnouncements.content }).from(dbs.businessAnnouncements).where(eq(dbs.businessAnnouncements.id, announcementB)))[0]?.content, "neighbor expired announcement");
+  assert.deepEqual((await database.select({ action: dbs.auditLogs.action, actorId: dbs.auditLogs.actorId, targetId: dbs.auditLogs.targetId, safeMetadata: dbs.auditLogs.safeMetadata }).from(dbs.auditLogs).where(eq(dbs.auditLogs.id, auditA)))[0], { action: "customer.profile_updated", actorId: userId, targetId: customerA, safeMetadata: { retentionRedacted: true } });
+  assert.deepEqual((await database.select({ safeMetadata: dbs.auditLogs.safeMetadata }).from(dbs.auditLogs).where(eq(dbs.auditLogs.id, auditB)))[0]?.safeMetadata, { privateDetail: "neighbor audit metadata" });
   assert.deepEqual(await retention.sweep(now, 20), { batches: 0 });
   const audit = await database.select({ safeMetadata: dbs.auditLogs.safeMetadata }).from(dbs.auditLogs).where(and(eq(dbs.auditLogs.businessId, businessA), eq(dbs.auditLogs.action, "business.content_retention_scrubbed")));
-  assert.equal(audit.length, 7); assert.equal(JSON.stringify(audit).includes("private"), false);
+  assert.equal(audit.length, 8); assert.equal(JSON.stringify(audit).includes("private"), false);
   console.log("Phase 7 business retention: audited opt-in policy, tenant isolation, pending-event protection, redaction, and idempotent sweep passed");
 } finally {
   await database.delete(dbs.businessRetentionPolicies).where(eq(dbs.businessRetentionPolicies.businessId, businessA));
   await database.delete(dbs.auditLogs).where(eq(dbs.auditLogs.businessId, businessA));
+  await database.delete(dbs.auditLogs).where(eq(dbs.auditLogs.businessId, businessB));
   await database.delete(dbs.identityLinks).where(eq(dbs.identityLinks.businessId, businessA));
   await database.delete(dbs.customerIdentities).where(eq(dbs.customerIdentities.businessId, businessA));
   await database.delete(dbs.customerIdentities).where(eq(dbs.customerIdentities.businessId, businessB));
