@@ -1,3 +1,22 @@
 "use client";
-import { Alert, Button, Card, PasswordInput, Stack, TextInput, Title } from "@mantine/core"; import { useForm } from "@mantine/form"; import { useState } from "react";
-export default function Page() { const [state, setState] = useState(""); const form = useForm({ initialValues: { name: "", password: "" }, validate: { name: (value) => value ? null : "Name is required", password: (value) => value.length >= 12 ? null : "Use at least 12 characters" } }); return <Card withBorder maw={420} mx="auto" mt="10vh"><form onSubmit={form.onSubmit(async (values) => { const token = new URLSearchParams(window.location.search).get("token"); if (!token) return setState("Missing invitation token."); const response = await fetch("/api/invitations/accept", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token, ...values }) }); setState(response.ok ? "Invitation accepted. You can now sign in." : "Invitation is invalid, expired, already used, or the password is incorrect."); })}><Stack><Title order={2}>Join your business</Title>{state && <Alert color={state.startsWith("Invitation accepted") ? "green" : "red"}>{state}</Alert>}<TextInput label="Name" {...form.getInputProps("name")} /><PasswordInput label="Create or enter password" {...form.getInputProps("password")} /><Button type="submit">Accept invitation</Button></Stack></form></Card>; }
+
+import { Alert, Button, Card, PasswordInput, Stack, TextInput, Title } from "@mantine/core";
+import { useForm } from "@mantine/form";
+import { useEffect, useState } from "react";
+
+export default function Page() {
+  const [state, setState] = useState("");
+  const [token, setToken] = useState("");
+  const form = useForm({ initialValues: { name: "", password: "" }, validate: { name: (value) => value ? null : "Name is required", password: (value) => value.length >= 12 ? null : "Use at least 12 characters" } });
+  useEffect(() => {
+    const value = new URLSearchParams(window.location.hash.slice(1)).get("token") ?? "";
+    setToken(value);
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    if (!value) setState("Missing invitation token.");
+  }, []);
+  return <Card withBorder maw={420} mx="auto" mt="10vh"><form onSubmit={form.onSubmit(async (values) => {
+    if (!token) return setState("Missing invitation token.");
+    const response = await fetch("/api/invitations/accept", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token, ...values }) });
+    setState(response.ok ? "Invitation accepted. You can now sign in." : "Invitation is invalid, expired, already used, or the password is incorrect.");
+  })}><Stack><Title order={2}>Join your business</Title>{state && <Alert color={state.startsWith("Invitation accepted") ? "green" : "red"}>{state}</Alert>}<TextInput label="Name" {...form.getInputProps("name")} /><PasswordInput label="Create or enter password" {...form.getInputProps("password")} /><Button type="submit" disabled={!token}>Accept invitation</Button></Stack></form></Card>;
+}
