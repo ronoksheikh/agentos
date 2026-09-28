@@ -1,6 +1,6 @@
 # Phase 7 backup and restore
 
-`scripts/phase7-backup.ts` creates a PostgreSQL custom-format dump and a copy of the private media tree. It writes SHA-256 and byte counts for each file in `manifest.json`. The destination must be new and outside the media tree. The script uses mode 0700 for directories and a 077 process umask. A failed backup removes its incomplete destination. Restore checks every checksum, refuses an existing media destination, and requires an empty PostgreSQL database.
+`scripts/phase7-backup.ts` creates a PostgreSQL custom-format dump and a copy of the private media tree. It writes SHA-256 and byte counts for each file in `manifest.json`. Version 2 manifests also record the target database name and business IDs so the offboarding tool can reject an unrelated/stale backup. The destination must be new and outside the media tree. The script uses mode 0700 for directories and a 077 process umask. A failed backup removes its incomplete destination. Restore checks every checksum, refuses an existing media destination, and requires an empty PostgreSQL database.
 
 Use PostgreSQL client binaries with the **same major version** as the server. Set `PG_BIN_DIR` to the directory containing matching `pg_dump` and `pg_restore` if the default `PATH` differs. The script checks this before dumping or restoring. Supply database URLs and media paths from the deployment secret manager; never check backups or credentials into Git.
 

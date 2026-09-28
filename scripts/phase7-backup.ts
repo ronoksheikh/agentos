@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { Pool } from "pg";
 
 type FileEntry = { path: string; bytes: number; sha256: string };
-type Manifest = { version: 1; createdAt: string; postgresMajor: number; files: FileEntry[] };
+type Manifest = { version: 1 | 2; createdAt: string; postgresMajor: number; databaseName?: string; businessIds?: string[]; files: FileEntry[] };
 const objectPath = /^[0-9A-HJKMNP-TV-Z]{26}\/attachments\/[0-9A-HJKMNP-TV-Z]{26}\/[a-f0-9]{64}$/i;
 const required = (name: string) => { const value = process.env[name]; if (!value) throw new Error(`${name}_REQUIRED`); return value; };
 const inside = (parent: string, child: string) => child === parent || child.startsWith(`${parent}${sep}`);
@@ -58,6 +58,11 @@ async function backup() {
   if (!(await lstat(mediaRoot)).isDirectory()) throw new Error("MEDIA_ROOT_INVALID");
   try { await lstat(destination); throw new Error("BACKUP_DESTINATION_EXISTS"); } catch (error) { if (!(error instanceof Error) || !('code' in error) || error.code !== "ENOENT") throw error; }
   const major = await postgresMajor(databaseUrl, "pg_dump");
+  const databaseName = decodeURIComponent(new URL(databaseUrl).pathname.slice(1));
+  const pool = new Pool({ connectionString: databaseUrl });
+  let businessIds: string[];
+  try { businessIds = (await pool.query<{ id: string }>("select id from businesses order by id")).rows.map((row) => row.id); }
+  finally { await pool.end(); }
   await mkdir(destination, { mode: 0o700 });
   try {
     await postgres("pg_dump", ["-Fc", "--no-owner", "--no-acl", "-f", join(destination, "database.dump")], databaseUrl);
@@ -76,7 +81,7 @@ async function backup() {
     }
     const dbPath = join(destination, "database.dump");
     const dbStat = await lstat(dbPath);
-    const manifest: Manifest = { version: 1, createdAt: new Date().toISOString(), postgresMajor: major, files: [{ path: "database.dump", bytes: dbStat.size, sha256: await hash(dbPath) }, ...entries] };
+    const manifest: Manifest = { version: 2, createdAt: new Date().toISOString(), postgresMajor: major, databaseName, businessIds, files: [{ path: "database.dump", bytes: dbStat.size, sha256: await hash(dbPath) }, ...entries] };
     await writeFile(join(destination, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
     console.log(`BACKUP_COMPLETE files=${entries.length} directory=${destination}`);
   } catch (error) { await rm(destination, { recursive: true, force: true }); throw error; }
@@ -88,7 +93,8 @@ async function restore() {
   const mediaTarget = resolve(required("RESTORE_MEDIA_DIR"));
   if (!isAbsolute(required("BACKUP_SOURCE")) || !isAbsolute(required("RESTORE_MEDIA_DIR")) || inside(source, mediaTarget) || inside(mediaTarget, source)) throw new Error("RESTORE_PATH_INVALID");
   const manifest = JSON.parse(await readFile(join(source, "manifest.json"), "utf8")) as Manifest;
-  if (manifest.version !== 1 || !Number.isInteger(manifest.postgresMajor) || !Array.isArray(manifest.files) || manifest.files[0]?.path !== "database.dump") throw new Error("BACKUP_FORMAT_INVALID");
+  if (![1, 2].includes(manifest.version) || !Number.isInteger(manifest.postgresMajor) || !Array.isArray(manifest.files) || manifest.files[0]?.path !== "database.dump") throw new Error("BACKUP_FORMAT_INVALID");
+  if (manifest.version === 2 && (!manifest.databaseName || !Array.isArray(manifest.businessIds))) throw new Error("BACKUP_FORMAT_INVALID");
   const seen = new Set<string>();
   for (const entry of manifest.files) {
     if (typeof entry.path !== "string" || entry.path !== "database.dump" && !objectPath.test(entry.path) || seen.has(entry.path) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error("BACKUP_FORMAT_INVALID");

@@ -12,6 +12,8 @@
     "db:phase4-smoke": "bun scripts/phase4-db-smoke.ts",
     "db:phase5-smoke": "bun scripts/phase5-integration.ts",
     "db:phase5-restart": "bun scripts/phase5-restart-check.ts",
+    "db:phase7-retention": "bun scripts/phase7-retention-integration.ts",
+    "db:phase7-offboard": "bun scripts/phase7-offboard-integration.ts",
     "db:phase6-messenger": "bun scripts/phase6-messenger-integration.ts",
     "db:migrate": "drizzle-kit migrate",
     "admin:dev": "next dev apps/admin",
