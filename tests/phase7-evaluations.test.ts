@@ -72,6 +72,14 @@ describe("Phase 7 published-agent evaluations", () => {
     expect(results.runs[0]?.suiteVersion).toBe(AGENT_EVALUATION_SUITE_VERSION);
   });
 
+  it("does not let an evaluation authorize a later configuration revision", async () => {
+    const { version } = createAgentFixture(); const candidate = { ...version, state: "DRAFT" as const, publishedAt: null, revision: 3 };
+    const results = fakeResults();
+    const run = await runAgentEvaluation({ version: candidate, results, async execute(_version, scenario) { return scenario.expectedStatus === "FAILED" ? { status: "FAILED", actionTypes: [], safeFailureCode: "MODEL_TIMEOUT" } : { status: "COMPLETED", actionTypes: [...scenario.expectedActions] }; } });
+    assertEvaluationAllowsPublish(run, candidate);
+    expect(() => assertEvaluationAllowsPublish(run, { ...candidate, revision: 4 })).toThrow("CURRENT_EVALUATION_REQUIRED");
+  });
+
   it("runs every fixture through AgentRuntime with deterministic provider responses and no external effects", async () => {
     const { version: published } = createAgentFixture(); const version = { ...published, state: "DRAFT" as const, publishedAt: null };
     const results = fakeResults(); const sideEffects = { count: 0, fixtureInputs: [] as string[] }; const adapter = new AgentRuntimeEvaluationAdapter(runtimeFactory(sideEffects));

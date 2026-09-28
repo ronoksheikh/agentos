@@ -49,6 +49,8 @@ export const evaluationCaseResultSchema = z.object({
 });
 export const evaluationRunSchema = z.object({
   id: ulidSchema, businessId: ulidSchema, agentId: ulidSchema, agentVersionId: ulidSchema,
+  /** The config revision that was actually exercised; legacy results without it cannot authorize publication. */
+  versionRevision: z.number().int().positive().optional(),
   suiteVersion: z.string(), status: z.enum(["PASSED", "FAILED"]), passedCases: z.number().int().nonnegative(), failedCases: z.number().int().nonnegative(),
   caseResults: z.array(evaluationCaseResultSchema), regressions: z.array(z.string()), evaluatedAt: z.string().datetime(),
 });
@@ -84,11 +86,11 @@ export async function runAgentEvaluation(input: {
     ? caseResults.filter((row) => priorResults.get(row.caseId)?.passed && !row.passed).map((row) => row.caseId)
     : [];
   const failedCases = caseResults.filter((row) => !row.passed).length;
-  const run = evaluationRunSchema.parse({ id: ulid(), businessId: input.version.businessId, agentId: input.version.agentId, agentVersionId: input.version.id, suiteVersion: AGENT_EVALUATION_SUITE_VERSION, status: failedCases === 0 && regressions.length === 0 ? "PASSED" : "FAILED", passedCases: caseResults.length - failedCases, failedCases, caseResults, regressions, evaluatedAt: (input.now ?? (() => new Date()))().toISOString() });
+  const run = evaluationRunSchema.parse({ id: ulid(), businessId: input.version.businessId, agentId: input.version.agentId, agentVersionId: input.version.id, versionRevision: input.version.revision ?? 1, suiteVersion: AGENT_EVALUATION_SUITE_VERSION, status: failedCases === 0 && regressions.length === 0 ? "PASSED" : "FAILED", passedCases: caseResults.length - failedCases, failedCases, caseResults, regressions, evaluatedAt: (input.now ?? (() => new Date()))().toISOString() });
   await input.results.save(run);
   return run;
 }
 
-export function assertEvaluationAllowsPublish(run: AgentEvaluationRun | null, version: Pick<AgentVersion, "businessId" | "agentId" | "id">) {
-  if (!run || run.businessId !== version.businessId || run.agentId !== version.agentId || run.agentVersionId !== version.id || run.suiteVersion !== AGENT_EVALUATION_SUITE_VERSION || run.status !== "PASSED" || run.failedCases !== 0 || run.regressions.length !== 0) throw new Error("CURRENT_EVALUATION_REQUIRED");
+export function assertEvaluationAllowsPublish(run: AgentEvaluationRun | null, version: Pick<AgentVersion, "businessId" | "agentId" | "id" | "revision">) {
+  if (!run || run.businessId !== version.businessId || run.agentId !== version.agentId || run.agentVersionId !== version.id || run.versionRevision !== (version.revision ?? 1) || run.suiteVersion !== AGENT_EVALUATION_SUITE_VERSION || run.status !== "PASSED" || run.failedCases !== 0 || run.regressions.length !== 0) throw new Error("CURRENT_EVALUATION_REQUIRED");
 }

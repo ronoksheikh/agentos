@@ -45,7 +45,7 @@ export const agentVersionConfigSchema = z.object({
 });
 
 export const agentSchema = z.object({ id: ulidSchema, businessId: ulidSchema, name: z.string().min(1), activeVersionId: ulidSchema.nullable(), createdAt: isoDateTimeSchema, updatedAt: isoDateTimeSchema });
-export const agentVersionSchema = z.object({ id: ulidSchema, businessId: ulidSchema, agentId: ulidSchema, version: z.number().int().positive(), state: agentVersionStateSchema, config: agentVersionConfigSchema, createdBy: ulidSchema, createdAt: isoDateTimeSchema, publishedAt: isoDateTimeSchema.nullable() });
+export const agentVersionSchema = z.object({ id: ulidSchema, businessId: ulidSchema, agentId: ulidSchema, version: z.number().int().positive(), state: agentVersionStateSchema, config: agentVersionConfigSchema, createdBy: ulidSchema, createdAt: isoDateTimeSchema, publishedAt: isoDateTimeSchema.nullable(), revision: z.number().int().positive().optional(), basedOnVersionId: ulidSchema.nullable().optional() });
 export type Agent = z.infer<typeof agentSchema>;
 export type AgentVersion = z.infer<typeof agentVersionSchema>;
 export type AgentVersionConfig = z.infer<typeof agentVersionConfigSchema>;
@@ -57,7 +57,7 @@ export interface AgentVersionRepository {
   getVersion(context: TrustedBusinessContext, versionId: string): Promise<AgentVersion | null>;
   getActiveVersion(context: TrustedBusinessContext, agentId: string): Promise<AgentVersion | null>;
   saveVersion(context: TrustedBusinessContext, version: AgentVersion): Promise<void>;
-  selectPublishedVersion(context: TrustedBusinessContext, agentId: string, versionId: string, actorId: string): Promise<void>;
+  selectPublishedVersion(context: TrustedBusinessContext, agentId: string, versionId: string, actorId: string, expectedRevision?: number): Promise<void>;
 }
 
 export class AgentVersionService {
@@ -74,6 +74,23 @@ export class AgentVersionService {
     if (!version || version.agentId !== agentId || version.state === "ARCHIVED") throw new Error("Version cannot be published");
     if (!this.evaluations) throw new Error("CURRENT_EVALUATION_REQUIRED");
     assertEvaluationAllowsPublish(await this.evaluations.latestForVersion(context.businessId, versionId), version);
-    await this.repository.selectPublishedVersion(context, agentId, versionId, actorId);
+    assertAgentVersionCompatible(version.config);
+    await this.repository.selectPublishedVersion(context, agentId, versionId, actorId, version.revision ?? 1);
   }
+  async rollback(context: TrustedBusinessContext, agentId: string, versionId: string, actorId: string): Promise<void> {
+    const version = await this.repository.getVersion(context, versionId);
+    if (!version || version.agentId !== agentId || !version.publishedAt) throw new Error("ROLLBACK_TARGET_INVALID");
+    if (!this.evaluations) throw new Error("CURRENT_EVALUATION_REQUIRED");
+    assertEvaluationAllowsPublish(await this.evaluations.latestForVersion(context.businessId, versionId), version);
+    assertAgentVersionCompatible(version.config);
+    await this.repository.selectPublishedVersion(context, agentId, versionId, actorId, version.revision ?? 1);
+  }
+}
+
+export function assertAgentVersionCompatible(config: AgentVersionConfig) {
+  const policy = config.responseTimingPolicy;
+  if (policy.minPreSendDelayMs > policy.maxPreSendDelayMs || policy.maxPreSendDelayMs > policy.maxCustomerWaitMs) throw new Error("INCOMPATIBLE_TIMING_POLICY");
+  if (!config.disclosurePolicy.discloseWhenAsked || !/automated|ai|virtual/i.test(config.disclosurePolicy.statement)) throw new Error("UNTRUTHFUL_DISCLOSURE_POLICY");
+  if (config.browserPolicy.enabled && !config.browserPolicy.allowedDomains.length) throw new Error("BROWSER_DOMAINS_REQUIRED");
+  if (config.knowledgePolicy.enabled && !config.knowledgePolicy.sourceIds.length) throw new Error("KNOWLEDGE_SOURCES_REQUIRED");
 }

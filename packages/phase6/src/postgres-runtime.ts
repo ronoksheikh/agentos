@@ -1,8 +1,8 @@
-import { and, eq, desc, gt, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, eq, desc, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ulid } from "ulid";
 import * as dbs from "@agentos/database";
-import { agentSchema, agentVersionSchema, evaluationRunSchema, type Agent, type AgentEvaluationRun, type AgentVersion, type AgentVersionRepository, type EvaluationResultRepository } from "@agentos/agents";
+import { agentSchema, agentVersionConfigSchema, agentVersionSchema, evaluationRunSchema, type Agent, type AgentEvaluationRun, type AgentVersion, type AgentVersionRepository, type EvaluationResultRepository } from "@agentos/agents";
 import { agentActionSchema, type ActionRecord, type ActionRepository, type AgentAction, type DomainAction, type DomainActionHandler } from "@agentos/actions";
 import type { ContextSource } from "@agentos/context";
 import type { AgentEvent } from "@agentos/events";
@@ -14,11 +14,85 @@ const iso = (date: Date) => date.toISOString();
 
 export class PostgresAgentVersionRepository implements AgentVersionRepository {
   constructor(private readonly db: NodePgDatabase) {}
+  private authorize(context: TrustedBusinessContext, capability = "agent.manage") { if (!context.capabilityGrants.includes(capability)) throw new Error("FORBIDDEN"); }
   async getAgent(context: TrustedBusinessContext, id: string): Promise<Agent | null> { const row = (await this.db.select().from(dbs.agents).where(and(eq(dbs.agents.id, id), eq(dbs.agents.businessId, context.businessId))).limit(1))[0]; return row ? agentSchema.parse({ ...row, createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt) }) : null; }
   async getVersion(context: TrustedBusinessContext, id: string): Promise<AgentVersion | null> { const row = (await this.db.select().from(dbs.agentVersions).where(and(eq(dbs.agentVersions.id, id), eq(dbs.agentVersions.businessId, context.businessId))).limit(1))[0]; return row ? agentVersionSchema.parse({ ...row, createdAt: iso(row.createdAt), publishedAt: row.publishedAt ? iso(row.publishedAt) : null }) : null; }
   async getActiveVersion(context: TrustedBusinessContext, agentId: string) { const agent = await this.getAgent(context, agentId); return agent?.activeVersionId ? this.getVersion(context, agent.activeVersionId) : null; }
-  async saveVersion(context: TrustedBusinessContext, version: AgentVersion) { scope(context, version.businessId); await this.db.insert(dbs.agentVersions).values({ id: version.id, businessId: version.businessId, agentId: version.agentId, version: version.version, state: version.state, config: version.config, createdBy: version.createdBy, ...(version.publishedAt ? { publishedAt: new Date(version.publishedAt) } : {}) }); }
-  async selectPublishedVersion(context: TrustedBusinessContext, agentId: string, versionId: string, actorId: string) { const version = await this.getVersion(context, versionId); if (!version || version.agentId !== agentId) throw new Error("VERSION_NOT_FOUND"); await this.db.transaction(async (tx) => { await tx.update(dbs.agentVersions).set({ state: "ARCHIVED" }).where(and(eq(dbs.agentVersions.businessId, context.businessId), eq(dbs.agentVersions.agentId, agentId), eq(dbs.agentVersions.state, "PUBLISHED"))); await tx.update(dbs.agentVersions).set({ state: "PUBLISHED", publishedAt: new Date() }).where(and(eq(dbs.agentVersions.id, versionId), eq(dbs.agentVersions.businessId, context.businessId))); await tx.update(dbs.agents).set({ activeVersionId: versionId, updatedAt: new Date() }).where(and(eq(dbs.agents.id, agentId), eq(dbs.agents.businessId, context.businessId))); await tx.insert(dbs.auditLogs).values({ id: ulid(), businessId: context.businessId, actorId, action: "agent.version.published", targetType: "agent", targetId: agentId, safeMetadata: { versionId } }); }); }
+  async saveVersion(context: TrustedBusinessContext, version: AgentVersion) { scope(context, version.businessId); await this.db.insert(dbs.agentVersions).values({ id: version.id, businessId: version.businessId, agentId: version.agentId, version: version.version, state: version.state, config: version.config, revision: version.revision ?? 1, basedOnVersionId: version.basedOnVersionId ?? null, createdBy: version.createdBy, ...(version.publishedAt ? { publishedAt: new Date(version.publishedAt) } : {}) }); }
+  async createAgent(context: TrustedBusinessContext, actorId: string, nameInput: string, configInput: unknown) {
+    this.authorize(context); const name = nameInput.trim(); if (!name || name.length > 200) throw new Error("INVALID_AGENT_NAME");
+    const config = agentVersionConfigSchema.parse(configInput); const agentId = ulid(); const versionId = ulid();
+    return this.db.transaction(async (tx) => {
+      await tx.insert(dbs.agents).values({ id: agentId, businessId: context.businessId, name });
+      const version = (await tx.insert(dbs.agentVersions).values({ id: versionId, businessId: context.businessId, agentId, version: 1, state: "DRAFT", config, revision: 1, basedOnVersionId: null, createdBy: actorId }).returning())[0]!;
+      await tx.insert(dbs.auditLogs).values([
+        { id: ulid(), businessId: context.businessId, actorId, action: "agent.created", targetType: "agent", targetId: agentId, safeMetadata: { name } },
+        { id: ulid(), businessId: context.businessId, actorId, action: "agent.version.draft.created", targetType: "agent_version", targetId: versionId, safeMetadata: { agentId, version: 1, basedOnVersionId: null } },
+      ]);
+      return { agentId, version: agentVersionSchema.parse({ ...version, createdAt: iso(version.createdAt), publishedAt: version.publishedAt ? iso(version.publishedAt) : null }) };
+    });
+  }
+  async createDraft(context: TrustedBusinessContext, agentId: string, actorId: string, configInput: unknown, basedOnVersionId?: string) {
+    this.authorize(context); const config = agentVersionConfigSchema.parse(configInput); const now = new Date();
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${context.businessId}), hashtext(${agentId}))`);
+      const agent = (await tx.select({ id: dbs.agents.id }).from(dbs.agents).where(and(eq(dbs.agents.id, agentId), eq(dbs.agents.businessId, context.businessId))).limit(1))[0];
+      if (!agent) throw new Error("AGENT_NOT_FOUND");
+      if (basedOnVersionId) {
+        const basedOn = (await tx.select({ id: dbs.agentVersions.id }).from(dbs.agentVersions).where(and(eq(dbs.agentVersions.id, basedOnVersionId), eq(dbs.agentVersions.agentId, agentId), eq(dbs.agentVersions.businessId, context.businessId))).limit(1))[0];
+        if (!basedOn) throw new Error("VERSION_NOT_FOUND");
+      }
+      const latest = (await tx.select({ version: dbs.agentVersions.version }).from(dbs.agentVersions).where(and(eq(dbs.agentVersions.agentId, agentId), eq(dbs.agentVersions.businessId, context.businessId))).orderBy(desc(dbs.agentVersions.version)).limit(1))[0];
+      const row = (await tx.insert(dbs.agentVersions).values({ id: ulid(), businessId: context.businessId, agentId, version: (latest?.version ?? 0) + 1, state: "DRAFT", config, revision: 1, basedOnVersionId: basedOnVersionId ?? null, createdBy: actorId }).returning())[0]!;
+      await tx.insert(dbs.auditLogs).values({ id: ulid(), businessId: context.businessId, actorId, action: "agent.version.draft.created", targetType: "agent_version", targetId: row.id, safeMetadata: { agentId, version: row.version, basedOnVersionId: basedOnVersionId ?? null } });
+      return agentVersionSchema.parse({ ...row, createdAt: iso(row.createdAt), publishedAt: row.publishedAt ? iso(row.publishedAt) : null });
+    });
+  }
+  async updateDraft(context: TrustedBusinessContext, versionId: string, actorId: string, configInput: unknown, expectedRevision: number) {
+    this.authorize(context); const config = agentVersionConfigSchema.parse(configInput);
+    return this.db.transaction(async (tx) => {
+      const row = (await tx.update(dbs.agentVersions).set({ config, revision: expectedRevision + 1, updatedAt: new Date() }).where(and(eq(dbs.agentVersions.id, versionId), eq(dbs.agentVersions.businessId, context.businessId), eq(dbs.agentVersions.revision, expectedRevision), inArray(dbs.agentVersions.state, ["DRAFT", "TEST"]))).returning())[0];
+      if (!row) throw new Error("CONCURRENT_EDIT_OR_IMMUTABLE_VERSION");
+      await tx.insert(dbs.auditLogs).values({ id: ulid(), businessId: context.businessId, actorId, action: "agent.version.updated", targetType: "agent_version", targetId: versionId, safeMetadata: { revision: row.revision } });
+      return agentVersionSchema.parse({ ...row, createdAt: iso(row.createdAt), publishedAt: row.publishedAt ? iso(row.publishedAt) : null });
+    });
+  }
+  async selectForTest(context: TrustedBusinessContext, versionId: string, actorId: string) {
+    this.authorize(context, "run.execute");
+    return this.db.transaction(async (tx) => {
+      const row = (await tx.update(dbs.agentVersions).set({ state: "TEST", updatedAt: new Date() }).where(and(eq(dbs.agentVersions.id, versionId), eq(dbs.agentVersions.businessId, context.businessId), inArray(dbs.agentVersions.state, ["DRAFT", "TEST"]))).returning())[0];
+      if (!row) throw new Error("VERSION_NOT_RUNNABLE");
+      await tx.insert(dbs.auditLogs).values({ id: ulid(), businessId: context.businessId, actorId, action: "agent.version.test.selected", targetType: "agent_version", targetId: versionId, safeMetadata: { revision: row.revision } });
+      return agentVersionSchema.parse({ ...row, createdAt: iso(row.createdAt), publishedAt: row.publishedAt ? iso(row.publishedAt) : null });
+    });
+  }
+  async archiveVersion(context: TrustedBusinessContext, versionId: string, actorId: string) {
+    this.authorize(context);
+    return this.db.transaction(async (tx) => {
+      const target = (await tx.select({ id: dbs.agentVersions.id, agentId: dbs.agentVersions.agentId, state: dbs.agentVersions.state, activeVersionId: dbs.agents.activeVersionId }).from(dbs.agentVersions).innerJoin(dbs.agents, and(eq(dbs.agents.id, dbs.agentVersions.agentId), eq(dbs.agents.businessId, dbs.agentVersions.businessId))).where(and(eq(dbs.agentVersions.id, versionId), eq(dbs.agentVersions.businessId, context.businessId))).limit(1).for("update"))[0];
+      if (!target) throw new Error("VERSION_NOT_FOUND");
+      if (target.activeVersionId === versionId || target.state === "PUBLISHED") throw new Error("ACTIVE_VERSION_CANNOT_ARCHIVE");
+      const row = (await tx.update(dbs.agentVersions).set({ state: "ARCHIVED", updatedAt: new Date() }).where(and(eq(dbs.agentVersions.id, versionId), eq(dbs.agentVersions.businessId, context.businessId), inArray(dbs.agentVersions.state, ["DRAFT", "TEST"]))).returning())[0];
+      if (!row) throw new Error("VERSION_NOT_ARCHIVABLE");
+      await tx.insert(dbs.auditLogs).values({ id: ulid(), businessId: context.businessId, actorId, action: "agent.version.archived", targetType: "agent_version", targetId: versionId, safeMetadata: { agentId: row.agentId } });
+      return agentVersionSchema.parse({ ...row, createdAt: iso(row.createdAt), publishedAt: row.publishedAt ? iso(row.publishedAt) : null });
+    });
+  }
+  async selectPublishedVersion(context: TrustedBusinessContext, agentId: string, versionId: string, actorId: string, expectedRevision = 1) {
+    this.authorize(context);
+    await this.db.transaction(async (tx) => {
+      const agent = (await tx.select({ id: dbs.agents.id }).from(dbs.agents).where(and(eq(dbs.agents.id, agentId), eq(dbs.agents.businessId, context.businessId))).limit(1).for("update"))[0];
+      const version = (await tx.select({ id: dbs.agentVersions.id, state: dbs.agentVersions.state, publishedAt: dbs.agentVersions.publishedAt, revision: dbs.agentVersions.revision, config: dbs.agentVersions.config }).from(dbs.agentVersions).where(and(eq(dbs.agentVersions.id, versionId), eq(dbs.agentVersions.agentId, agentId), eq(dbs.agentVersions.businessId, context.businessId))).limit(1))[0];
+      if (!agent || !version || (version.state === "ARCHIVED" && !version.publishedAt)) throw new Error("VERSION_NOT_FOUND");
+      if (version.revision !== expectedRevision) throw new Error("CONCURRENT_EDIT_OR_STALE_EVALUATION");
+      await tx.update(dbs.agentVersions).set({ state: "ARCHIVED", updatedAt: new Date() }).where(and(eq(dbs.agentVersions.businessId, context.businessId), eq(dbs.agentVersions.agentId, agentId), eq(dbs.agentVersions.state, "PUBLISHED")));
+      const selected = (await tx.update(dbs.agentVersions).set({ state: "PUBLISHED", publishedAt: new Date(), updatedAt: new Date() }).where(and(eq(dbs.agentVersions.id, versionId), eq(dbs.agentVersions.businessId, context.businessId), eq(dbs.agentVersions.revision, expectedRevision))).returning({ id: dbs.agentVersions.id }))[0];
+      if (!selected) throw new Error("CONCURRENT_EDIT_OR_STALE_EVALUATION");
+      const config = agentVersionConfigSchema.parse(version.config);
+      await tx.update(dbs.agents).set({ name: config.name, activeVersionId: versionId, updatedAt: new Date() }).where(and(eq(dbs.agents.id, agentId), eq(dbs.agents.businessId, context.businessId)));
+      await tx.insert(dbs.auditLogs).values({ id: ulid(), businessId: context.businessId, actorId, action: "agent.version.published", targetType: "agent", targetId: agentId, safeMetadata: { versionId } });
+    });
+  }
 }
 
 /** Evaluation results deliberately persist only fixture IDs and safe outcomes, never fixture text or model context. */
