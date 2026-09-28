@@ -80,7 +80,7 @@ export class PostgresCommentProcessor {
       const conversation = (await tx.select({ ownership: dbs.conversations.ownership }).from(dbs.conversations).where(and(eq(dbs.conversations.id, comment.conversationId!), eq(dbs.conversations.businessId, event.businessId))).limit(1).for("update"))[0];
       if (!conversation || conversation.ownership !== "AI_ACTIVE") return;
       const handoffId = ulid();
-      await tx.insert(dbs.handoffs).values({ id: handoffId, businessId: event.businessId, conversationId: comment.conversationId!, customerId: comment.customerId, channel: "facebook_messenger", reason: "Comment needs human review", priority: "NORMAL", state: "HANDOFF_REQUESTED", traceId: event.traceId, idempotencyKey: `comment:${decisionId}:handoff` }).onConflictDoNothing();
+      await tx.insert(dbs.handoffs).values({ id: handoffId, businessId: event.businessId, conversationId: comment.conversationId!, customerId: comment.customerId, channel: "facebook_messenger", reason: "Comment needs human review", priority: "NORMAL", state: "HANDOFF_REQUESTED", staleAt: new Date(Date.now() + 60 * 60_000), traceId: event.traceId, idempotencyKey: `comment:${decisionId}:handoff` }).onConflictDoNothing();
       await tx.update(dbs.conversations).set({ ownership: "HANDOFF_REQUESTED", updatedAt: new Date() }).where(eq(dbs.conversations.id, comment.conversationId!));
       await tx.insert(dbs.conversationOwnershipHistory).values({ id: ulid(), businessId: event.businessId, conversationId: comment.conversationId!, handoffId, fromState: "AI_ACTIVE", toState: "HANDOFF_REQUESTED", actorId: "comment-processor", safeMetadata: { commentId: comment.id } });
     });

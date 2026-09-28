@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ulid } from "ulid";
 import * as dbs from "@agentos/database";
@@ -10,6 +10,21 @@ export class PostgresHandoffOperations {
   private actor(context: TrustedBusinessContext, capability: "conversation.read" | "handoff.manage") {
     if (context.principal.kind !== "user" || !context.capabilityGrants.includes(capability)) throw new Error("FORBIDDEN");
     return context.principal.userId;
+  }
+  async notifyStale(limit = 100) {
+    const now = this.now();
+    return this.db.transaction(async (tx) => {
+      const unstamped = await tx.select({ id: dbs.handoffs.id, createdAt: dbs.handoffs.createdAt }).from(dbs.handoffs).where(and(isNull(dbs.handoffs.staleAt), sql`${dbs.handoffs.state} in ('HANDOFF_REQUESTED','HUMAN_ACTIVE','PAUSED')`)).orderBy(dbs.handoffs.createdAt).limit(limit).for("update", { skipLocked: true });
+      for (const handoff of unstamped) await tx.update(dbs.handoffs).set({ staleAt: new Date(handoff.createdAt.getTime() + 60 * 60_000) }).where(and(eq(dbs.handoffs.id, handoff.id), isNull(dbs.handoffs.staleAt)));
+      const overdue = await tx.select({ id: dbs.handoffs.id, businessId: dbs.handoffs.businessId, priority: dbs.handoffs.priority }).from(dbs.handoffs).where(and(isNull(dbs.handoffs.staleNotifiedAt), lte(dbs.handoffs.staleAt, now), sql`${dbs.handoffs.state} in ('HANDOFF_REQUESTED','HUMAN_ACTIVE','PAUSED')`)).orderBy(dbs.handoffs.staleAt).limit(limit).for("update", { skipLocked: true });
+      for (const handoff of overdue) {
+        const claimed = await tx.update(dbs.handoffs).set({ staleNotifiedAt: now, updatedAt: now }).where(and(eq(dbs.handoffs.id, handoff.id), isNull(dbs.handoffs.staleNotifiedAt))).returning({ id: dbs.handoffs.id });
+        if (!claimed.length) continue;
+        const members = await tx.select({ userId: dbs.businessMemberships.userId }).from(dbs.businessMemberships).where(eq(dbs.businessMemberships.businessId, handoff.businessId));
+        if (members.length) await tx.insert(dbs.notifications).values(members.map(({ userId }) => ({ id: ulid(), businessId: handoff.businessId, userId, handoffId: handoff.id, type: "HANDOFF_STALE", severity: "WARNING", dedupeKey: `handoff:${handoff.id}:stale`, safePayload: { priority: handoff.priority } }))).onConflictDoNothing();
+      }
+      return overdue.length;
+    });
   }
   async detail(context: TrustedBusinessContext, conversationId: string) {
     this.actor(context, "conversation.read");

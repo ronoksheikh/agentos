@@ -3,6 +3,7 @@ import type { AgentRuntime } from "@agentos/agent-runtime";
 import type { ChannelRegistry, PresenceController } from "@agentos/channels";
 import type { RealtimeBus } from "@agentos/realtime";
 import { EventRouter, Phase5Processor, Phase5Queues, Phase5Store } from "@agentos/phase5";
+import { PostgresHandoffOperations } from "@agentos/handoff";
 import { eq } from "drizzle-orm";
 import { ulid } from "ulid";
 import { effectIntents, serviceHeartbeats } from "@agentos/database";
@@ -27,11 +28,13 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
     return deps.db.insert(serviceHeartbeats).values({ instanceId: providerInstanceId, service, lastSeenAt: new Date() }).onConflictDoUpdate({ target: serviceHeartbeats.instanceId, set: { service, lastSeenAt: new Date() } });
   };
   const store = new Phase5Store(deps.db);
+  const handoffs = new PostgresHandoffOperations(deps.db);
   const queues = new Phase5Queues(store, deps.redisUrl);
   const router = new EventRouter(store, deps.attachment, deps.browser, deps.comments);
   const processor = new Phase5Processor({ store, runtime: deps.runtime, registry: deps.registry, presence: deps.presence, router, ...(deps.realtime ? { realtime: deps.realtime } : {}), ...(deps.capabilities ? { capabilities: deps.capabilities } : {}) });
   await queues.recover();
   await deps.trialSweep?.();
+  await handoffs.notifyStale();
   await deps.retentionSweep?.().catch(() => { console.error("RETENTION_SWEEP_FAILED"); });
   await store.scheduleDueGoals();
   await heartbeat();
@@ -40,6 +43,7 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
   await queues.pump();
   const reconciliationTimer = setInterval(() => { void store.db.select({ id: effectIntents.id, businessId: effectIntents.businessId }).from(effectIntents).where(eq(effectIntents.state, "UNKNOWN")).limit(50).then((effects) => Promise.all(effects.map((effect) => processor.reconcileUnknownEffect(effect.businessId, effect.id).catch(() => "UNKNOWN")))).catch(() => {}); }, 30_000);
   const trialTimer = setInterval(() => { void deps.trialSweep?.().catch(() => {}); }, 60_000);
+  const staleHandoffTimer = setInterval(() => { void handoffs.notifyStale().catch(() => {}); }, 60_000);
   let retentionRunning = false;
   const retentionTimer = setInterval(() => {
     if (!deps.retentionSweep || retentionRunning) return;
@@ -47,7 +51,7 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
     void deps.retentionSweep().catch(() => { console.error("RETENTION_SWEEP_FAILED"); }).finally(() => { retentionRunning = false; });
   }, 60_000);
   const heartbeatTimer = setInterval(() => { void Promise.all([heartbeat(), providerHeartbeat()]).catch(() => { console.error("WORKER_HEARTBEAT_FAILED"); }); }, 20_000);
-  return async () => { clearInterval(reconciliationTimer); clearInterval(trialTimer); clearInterval(retentionTimer); clearInterval(heartbeatTimer); await stopWorkers(); await queues.close(); await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, instanceId)); if (deps.providerCircuitState) await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, providerInstanceId)); };
+  return async () => { clearInterval(reconciliationTimer); clearInterval(trialTimer); clearInterval(staleHandoffTimer); clearInterval(retentionTimer); clearInterval(heartbeatTimer); await stopWorkers(); await queues.close(); await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, instanceId)); if (deps.providerCircuitState) await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, providerInstanceId)); };
 }
 
 if (import.meta.main) {

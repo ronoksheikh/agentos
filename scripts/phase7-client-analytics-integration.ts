@@ -7,12 +7,13 @@ import * as dbs from "@agentos/database";
 import { PostgresClientDashboard } from "@agentos/client-operations";
 import { PostgresRuntimeDomainActions } from "@agentos/phase6";
 import { Phase5Store } from "@agentos/phase5";
+import { PostgresHandoffOperations } from "@agentos/handoff";
 import { createTrustedBusinessContext } from "@agentos/shared";
 
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL_REQUIRED");
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const db = drizzle(pool);
-const businessA = ulid(); const businessB = ulid(); const userA = ulid(); const userA2 = ulid(); const userB = ulid(); const customerA = ulid(); const customerB = ulid(); const realA = ulid(); const noReplyA = ulid(); const testA = ulid(); const realB = ulid(); const agentA = ulid(); const versionA = ulid(); const runA = ulid(); const deadWork = ulid(); const notificationA = ulid(); const notificationA2 = ulid(); const notificationB = ulid(); const now = new Date();
+const businessA = ulid(); const businessB = ulid(); const userA = ulid(); const userA2 = ulid(); const userB = ulid(); const customerA = ulid(); const customerB = ulid(); const realA = ulid(); const noReplyA = ulid(); const testA = ulid(); const realB = ulid(); const agentA = ulid(); const versionA = ulid(); const runA = ulid(); const deadWork = ulid(); const staleHandoff = ulid(); const notificationA = ulid(); const notificationA2 = ulid(); const notificationB = ulid(); const now = new Date();
 const context = (businessId: string, grants = ["conversation.read"], userId = businessId === businessA ? userA : userB, conversationId?: string) => createTrustedBusinessContext({ businessId, principal: { kind: "user", userId, sessionId: ulid() }, source: "test_harness", ...(conversationId ? { conversationId } : {}), traceId: ulid(), capabilityGrants: grants });
 try {
   await db.insert(dbs.businesses).values([{ id: businessA, name: "Analytics A" }, { id: businessB, name: "Analytics B" }]);
@@ -67,6 +68,10 @@ try {
   const handoffNotices = await db.select({ userId: dbs.notifications.userId, severity: dbs.notifications.severity, handoffId: dbs.notifications.handoffId }).from(dbs.notifications).where(and(eq(dbs.notifications.businessId, businessA), eq(dbs.notifications.type, "HANDOFF_REQUESTED")));
   const generatedNotices = handoffNotices.filter((notice) => notice.handoffId); assert.equal(generatedNotices.length, 2); assert.ok(generatedNotices.every((notice) => notice.severity === "WARNING"));
   assert.deepEqual((await service.snapshot(context(businessA), "overview")).notifications.map((item) => item.type).sort(), ["HANDOFF_REQUESTED", "HANDOFF_REQUESTED"]);
+  await db.insert(dbs.handoffs).values({ id: staleHandoff, businessId: businessA, conversationId: realA, customerId: customerA, channel: "web_chat", reason: "Stale fixture", priority: "URGENT", state: "HANDOFF_REQUESTED", staleAt: new Date(now.getTime() - 1_000), traceId: ulid(), idempotencyKey: `stale:${staleHandoff}` });
+  const handoffOps = new PostgresHandoffOperations(db, () => now); assert.equal(await handoffOps.notifyStale(), 1); assert.equal(await handoffOps.notifyStale(), 0);
+  const staleNotices = await db.select({ userId: dbs.notifications.userId, safePayload: dbs.notifications.safePayload }).from(dbs.notifications).where(and(eq(dbs.notifications.businessId, businessA), eq(dbs.notifications.type, "HANDOFF_STALE")));
+  assert.equal(staleNotices.length, 2); assert.ok(staleNotices.every((notice) => JSON.stringify(notice.safePayload) === JSON.stringify({ priority: "URGENT" })));
   await db.insert(dbs.workItems).values({ id: deadWork, businessId: businessA, kind: "EVENT", resourceId: ulid(), traceId: ulid(), state: "PENDING", runAt: now });
   await new Phase5Store(db).finishWork(businessA, deadWork, "DEAD", "PROVIDER_UNAVAILABLE");
   const queueNotice = (await db.select({ safePayload: dbs.notifications.safePayload }).from(dbs.notifications).where(and(eq(dbs.notifications.businessId, businessA), eq(dbs.notifications.type, "QUEUE_WORK_DEAD"))))[0];
@@ -79,7 +84,7 @@ try {
   const bOverview = await service.snapshot(context(businessB), "overview");
   assert.deepEqual(bOverview.performance, { windowDays: 30, inboundConversations: 1, aiFirstResponseRate: 0, handoffRate: 100, customersHelped: 1, medianFirstResponseMs: 600_000 });
   await assert.rejects(service.snapshot(context(businessA, []), "overview"), /FORBIDDEN/);
-  console.log("Phase 7 client analytics and notifications: scoped performance, delivery-qualified timing, user/tenant inbox isolation, handoff/dead-queue notification idempotency, acknowledgement, and authorization passed");
+  console.log("Phase 7 client analytics and notifications: scoped performance, delivery-qualified timing, user/tenant inbox isolation, handoff/stale/dead-queue notification idempotency, acknowledgement, and authorization passed");
 } finally {
   await db.delete(dbs.notifications).where(eq(dbs.notifications.businessId, businessA)); await db.delete(dbs.notifications).where(eq(dbs.notifications.businessId, businessB));
   await db.delete(dbs.workItems).where(eq(dbs.workItems.businessId, businessA));
