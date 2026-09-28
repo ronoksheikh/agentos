@@ -20,7 +20,7 @@ This is a working audit, not a completion claim. `ARCHITECTURE.md`, `plan.md`, p
 4. Real Web Chat — durable visitor sessions, production adapter and transport, end-to-end and tenant-security tests.
 5. Facebook comments — verified Meta contract, normalization, policy/classification, safe actions, persistence, analytics and fake Meta drill.
 6. Product/operations — role-scoped analytics, trial lifecycle, flags/notifications, evaluation, retention/offboarding, backup/restore and health.
-7. Final validation — database smoke where a disposable `DATABASE_URL` is available, `bun run check`, both builds, browser integration, current release blockers, completion records, scoped commits and clean tree. Latest local code checks pass; the extended flag database drill is pending a disposable database.
+7. Final validation — database smoke where a disposable `DATABASE_URL` is available, `bun run check`, both builds, browser integration, current release blockers, completion records, scoped commits and clean tree. The expanded feature-flag drill passed on a fresh PostgreSQL 16 container; final repository-wide builds/checks will be rerun after the remaining audit.
 
 ## Validation so far
 
@@ -55,4 +55,4 @@ This is a working audit, not a completion claim. `ARCHITECTURE.md`, `plan.md`, p
 - Meta developer comment reference was attempted at <https://developers.facebook.com/docs/graph-api/reference/comment/> but returned HTTP 429. Do not infer current destructive permissions from third-party pages.
 - Meta-owned Python Business SDK sources for the comment fields/actions and Page `feed` subscription were reviewed: <https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/comment.py> and <https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/page.py>. Meta's own access-token diagnostic guide confirms `debug_token` scope inspection: <https://github.com/facebook/agentic-tools/blob/main/plugins/devtools/skills/debug-access-token/SKILL.md>. These source checks do not replace a live Page test.
 
-- Runtime-flag completion: `bun run check` passed with 96 tests and 521 assertions. `bun run admin:build` and `bun run client:build` passed; the client build reported existing lockfile-root and optional BullMQ Valkey Glide warnings. The extended PostgreSQL feature-flag drill is exposed as `bun run db:phase7-feature-flags` and covers the new flag precedence/grants, but was not rerun in this shell because `DATABASE_URL` was unset.
+- Runtime-flag completion: `bun run check` passed with 96 tests and 521 assertions. `bun run admin:build` and `bun run client:build` passed; the client build reported existing lockfile-root and optional BullMQ Valkey Glide warnings. `bun run db:phase7-feature-flags` passed after a fresh PostgreSQL 16 migration, including global/business precedence for experimental tools and runtime variants.
