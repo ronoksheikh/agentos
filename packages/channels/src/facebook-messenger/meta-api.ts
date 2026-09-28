@@ -13,10 +13,11 @@ export interface MetaApi {
   subscribeFeed?(pageId: string, pageToken: string): Promise<boolean>;
   isSubscribed(pageId: string, pageToken: string): Promise<boolean>;
   send(pageId: string, pageToken: string, body: Record<string, unknown>): Promise<{ messageId?: string }>;
-  getComment?(commentId: string, pageToken: string): Promise<{ id: string; message: string; createdAt?: string; authorId?: string; parentId?: string; postId?: string; canComment: boolean; canHide: boolean; isHidden: boolean }>;
+  getComment?(commentId: string, pageToken: string): Promise<{ id: string; message: string; createdAt?: string; authorId?: string; parentId?: string; postId?: string; canComment: boolean; canHide: boolean; canRemove: boolean; isHidden: boolean }>;
   getPost?(postId: string, pageToken: string): Promise<{ id: string; message?: string; authorId?: string }>;
   replyComment?(commentId: string, pageToken: string, message: string): Promise<{ id: string }>;
   hideComment?(commentId: string, pageToken: string): Promise<boolean>;
+  deleteComment?(commentId: string, pageToken: string): Promise<boolean>;
   inspectToken?(pageToken: string): Promise<{ appId: string; valid: boolean; type: string; scopes: string[]; expiresAt?: number }>;
 }
 
@@ -33,7 +34,7 @@ export class GraphMetaApi implements MetaApi {
   constructor(private readonly appId: string, private readonly appSecret: string, private readonly version = META_GRAPH_VERSION, private readonly fetcher: typeof fetch = fetch) {
     if (!/^v\d+\.0$/.test(version)) throw new Error("META_VERSION_INVALID");
   }
-  private async call<T>(path: string, token: string | null, options: { method?: "GET" | "POST"; body?: Record<string, unknown>; form?: boolean } = {}): Promise<T> {
+  private async call<T>(path: string, token: string | null, options: { method?: "GET" | "POST" | "DELETE"; body?: Record<string, unknown>; form?: boolean } = {}): Promise<T> {
     const url = new URL(`https://graph.facebook.com/${this.version}/${path}`);
     const response = await this.fetcher(url, { method: options.method ?? "GET", headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(options.body ? { "content-type": options.form ? "application/x-www-form-urlencoded" : "application/json" } : {}) }, ...(options.body ? { body: options.form ? new URLSearchParams(Object.entries(options.body).map(([key, value]) => [key, String(value)])).toString() : JSON.stringify(options.body) } : {}), signal: AbortSignal.timeout(8000), redirect: "error" }).catch(() => { throw new MetaApiError("META_TRANSIENT"); });
     const parsed: unknown = await response.json().catch(() => ({}));
@@ -75,9 +76,9 @@ export class GraphMetaApi implements MetaApi {
     return messageId ? { messageId } : {};
   }
   async getComment(commentId: string, pageToken: string) {
-    const result = await this.call<unknown>(`${encodeURIComponent(commentId)}?fields=id,message,created_time,from,parent,object,can_comment,can_hide,is_hidden`, pageToken);
-    const parsed = z.object({ id: z.string(), message: z.string().max(100_000), created_time: z.string().optional(), from: z.object({ id: z.string() }).optional(), parent: z.object({ id: z.string() }).optional(), object: z.object({ id: z.string() }).optional(), can_comment: z.boolean().default(false), can_hide: z.boolean().default(false), is_hidden: z.boolean().default(false) }).parse(result);
-    return { id: parsed.id, message: parsed.message, ...(parsed.created_time ? { createdAt: parsed.created_time } : {}), ...(parsed.from ? { authorId: parsed.from.id } : {}), ...(parsed.parent ? { parentId: parsed.parent.id } : {}), ...(parsed.object ? { postId: parsed.object.id } : {}), canComment: parsed.can_comment, canHide: parsed.can_hide, isHidden: parsed.is_hidden };
+    const result = await this.call<unknown>(`${encodeURIComponent(commentId)}?fields=id,message,created_time,from,parent,object,can_comment,can_hide,can_remove,is_hidden`, pageToken);
+    const parsed = z.object({ id: z.string(), message: z.string().max(100_000), created_time: z.string().optional(), from: z.object({ id: z.string() }).optional(), parent: z.object({ id: z.string() }).optional(), object: z.object({ id: z.string() }).optional(), can_comment: z.boolean().default(false), can_hide: z.boolean().default(false), can_remove: z.boolean().default(false), is_hidden: z.boolean().default(false) }).parse(result);
+    return { id: parsed.id, message: parsed.message, ...(parsed.created_time ? { createdAt: parsed.created_time } : {}), ...(parsed.from ? { authorId: parsed.from.id } : {}), ...(parsed.parent ? { parentId: parsed.parent.id } : {}), ...(parsed.object ? { postId: parsed.object.id } : {}), canComment: parsed.can_comment, canHide: parsed.can_hide, canRemove: parsed.can_remove, isHidden: parsed.is_hidden };
   }
   async getPost(postId: string, pageToken: string) {
     const result = await this.call<unknown>(`${encodeURIComponent(postId)}?fields=id,message,from`, pageToken);
@@ -90,6 +91,10 @@ export class GraphMetaApi implements MetaApi {
   }
   async hideComment(commentId: string, pageToken: string) {
     const result = await this.call<unknown>(encodeURIComponent(commentId), pageToken, { method: "POST", body: { is_hidden: "true" }, form: true });
+    return z.object({ success: z.boolean() }).parse(result).success;
+  }
+  async deleteComment(commentId: string, pageToken: string) {
+    const result = await this.call<unknown>(encodeURIComponent(commentId), pageToken, { method: "DELETE" });
     return z.object({ success: z.boolean() }).parse(result).success;
   }
   async inspectToken(pageToken: string) {

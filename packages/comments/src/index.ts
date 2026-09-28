@@ -40,7 +40,7 @@ export type CommentPolicyInput = z.infer<typeof commentPolicyInputSchema>;
 export const commentDecisionSchema = z.object({ outcome: z.enum(["KEEP", "HIDE", "REPLY", "HANDOFF", "DELETE"]), reviewRequired: z.boolean(), safeReason: z.string().min(1).max(100) });
 export type CommentDecision = z.infer<typeof commentDecisionSchema>;
 
-/** Deletion is intentionally unreachable until the separately verified destructive workflow exists. */
+/** Classifier output never deletes; the separate manual delete flow requires a manager and its own verified gates. */
 export class CommentPolicyEngine {
   evaluate(classification: CommentClassification, unsafeInput: CommentPolicyInput): CommentDecision {
     const input = commentPolicyInputSchema.parse(unsafeInput); const result = (outcome: CommentDecision["outcome"], reviewRequired: boolean, safeReason: string) => commentDecisionSchema.parse({ outcome, reviewRequired, safeReason });

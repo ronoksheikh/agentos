@@ -27,12 +27,12 @@ export async function selectMetaPageAction(form: FormData) { await execute(form,
 export async function verifyMetaCredentialAction(form: FormData) { await execute(form, (service, context) => service.verifyCredentials(context, value(form, "connectionId")), "credentials-verified"); }
 export async function subscribeMetaPageAction(form: FormData) { await execute(form, (service, context) => service.subscribePage(context, value(form, "connectionId")), "page-subscribed"); }
 export async function subscribeCommentFeedAction(form: FormData) { await execute(form, (service, context) => service.subscribeCommentFeed(context, value(form, "connectionId")), "comment-feed-subscribed"); }
-export async function verifyCommentCapabilityAction(form: FormData) { await execute(form, (service, context) => service.verifyCommentCapability(context, value(form, "connectionId"), value(form, "commentId"), z.enum(["READ", "REPLY", "HIDE"]).parse(value(form, "mode"))), "comment-capability-verified"); }
+export async function verifyCommentCapabilityAction(form: FormData) { await execute(form, (service, context) => service.verifyCommentCapability(context, value(form, "connectionId"), value(form, "commentId"), z.enum(["READ", "REPLY", "HIDE", "DELETE"]).parse(value(form, "mode"))), "comment-capability-verified"); }
 export async function updateCommentPolicyAction(form: FormData) {
   const id = value(form, "businessId"); let status = "comment-policy-updated";
   try {
     const context = await agencyMetaContext(id);
-    await new PostgresCommentPolicyService(database).update(context, value(form, "connectionId"), { enabled: form.has("enabled"), autoReply: form.has("autoReply"), autoHide: form.has("autoHide"), featureEnabled: form.has("featureEnabled"), minimumConfidence: Number(value(form, "minimumConfidence")) });
+    await new PostgresCommentPolicyService(database).update(context, value(form, "connectionId"), { enabled: form.has("enabled"), autoReply: form.has("autoReply"), autoHide: form.has("autoHide"), allowDelete: form.has("allowDelete"), featureEnabled: form.has("featureEnabled"), minimumConfidence: Number(value(form, "minimumConfidence")) });
     revalidatePath(`/businesses/${id}/messenger`);
   } catch (error) { status = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message.toLowerCase().replaceAll("_", "-") : "operation-failed"; }
   redirect(page(id, status));

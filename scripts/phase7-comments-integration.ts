@@ -15,8 +15,8 @@ import { createAgentFixture, ids } from "../tests/helpers";
 
 const databaseUrl = process.env.DATABASE_URL; if (!databaseUrl) throw new Error("DATABASE_URL_REQUIRED");
 const pool = new Pool({ connectionString: databaseUrl }); const db = drizzle(pool); const appSecret = "phase-seven-comment-app-secret"; const pageId = String(Math.floor(100_000_000 + Math.random() * 900_000_000));
-const replyCalls: string[] = []; const hideCalls: string[] = []; let authFailure = false;
-const api: MetaApi = { async exchangeCode() { return "unused"; }, async listPages() { return []; }, async verifyPage() { if (authFailure) throw new MetaApiError("META_AUTH"); return { id: pageId, name: "Test Page" }; }, async subscribePage() { return true; }, async subscribeFeed() { return true; }, async isSubscribed() { return true; }, async send() { return {}; }, async inspectToken() { return { appId: "test-app", valid: true, type: "PAGE", scopes: ["pages_read_engagement", "pages_manage_engagement"] }; }, async getComment(id) { return { id, message: id === "parent-3" ? "Is the blue version available?" : id.endsWith("2") ? "The item arrived broken. I need a refund." : id.endsWith("4") ? "Free followers visit my page https://spam.example" : "How much is this?", authorId: id.endsWith("6") ? pageId : `author-${id}`, ...(id === "comment-3" ? { parentId: "parent-3" } : {}), postId: "post-1", canComment: true, canHide: true, isHidden: false }; }, async getPost(id) { return { id, message: "Product details", authorId: pageId }; }, async replyComment(id) { replyCalls.push(id); if (id.endsWith("5")) throw new Error("Network response lost"); return { id: `reply-${id}` }; }, async hideComment(id) { hideCalls.push(id); return true; } };
+const replyCalls: string[] = []; const hideCalls: string[] = []; const deleteCalls: string[] = []; let authFailure = false;
+const api: MetaApi = { async exchangeCode() { return "unused"; }, async listPages() { return []; }, async verifyPage() { if (authFailure) throw new MetaApiError("META_AUTH"); return { id: pageId, name: "Test Page" }; }, async subscribePage() { return true; }, async subscribeFeed() { return true; }, async isSubscribed() { return true; }, async send() { return {}; }, async inspectToken() { return { appId: "test-app", valid: true, type: "PAGE", scopes: ["pages_read_engagement", "pages_manage_engagement"] }; }, async getComment(id) { return { id, message: id === "parent-3" ? "Is the blue version available?" : id.endsWith("2") ? "The item arrived broken. I need a refund." : id.endsWith("4") ? "Free followers visit my page https://spam.example" : "How much is this?", authorId: id.endsWith("6") ? pageId : `author-${id}`, ...(id === "comment-3" ? { parentId: "parent-3" } : {}), postId: "post-1", canComment: true, canHide: true, canRemove: true, isHidden: false }; }, async getPost(id) { return { id, message: "Product details", authorId: pageId }; }, async replyComment(id) { replyCalls.push(id); if (id.endsWith("5")) throw new Error("Network response lost"); return { id: `reply-${id}` }; }, async hideComment(id) { hideCalls.push(id); return true; }, async deleteComment(id) { deleteCalls.push(id); return true; } };
 const vault = new PostgresCredentialVault(db, Buffer.alloc(32, 7), "test");
 try {
   const fixture = createAgentFixture();
@@ -53,7 +53,8 @@ try {
   const firstDecision = (await db.select().from(dbs.commentDecisions).where(eq(dbs.commentDecisions.commentId, first.id)))[0]!;
   assert.equal(firstDecision.outcome, "KEEP"); assert.equal(firstDecision.actionStatus, "COMPLETED");
   const policyService = new PostgresCommentPolicyService(db);
-  assert.equal((await policyService.update(agency, connectionId, { enabled: true, autoReply: false, autoHide: false, minimumConfidence: 0.8, featureEnabled: true })).version, 1);
+  assert.equal((await policyService.update(agency, connectionId, { enabled: true, autoReply: false, autoHide: false, allowDelete: false, minimumConfidence: 0.8, featureEnabled: true })).version, 1);
+  assert.equal((await policyService.get(agency, connectionId)).allowDelete, false);
   const wrongTenant = createTrustedBusinessContext({ businessId: ids.businessB, principal: { kind: "user", userId: ids.user, sessionId: ulid() }, source: "test_harness", traceId: ulid(), capabilityGrants: ["channel.manage"] });
   await assert.rejects(policyService.get(wrongTenant, connectionId), /PAGE_CONNECTION_NOT_FOUND/);
   assert.equal((await connections.verifyCommentCapability(agency, connectionId, "controlled-7", "READ")).commentCapabilities.readVerified, true);
@@ -71,7 +72,10 @@ try {
   assert.equal((await connections.verifyCommentCapability(agency, connectionId, "controlled-7", "REPLY")).commentCapabilities.replyVerified, true);
   await assert.rejects(connections.verifyCommentCapability(agency, connectionId, "controlled-7", "REPLY"), /COMMENT_TEST_REVIEW_REQUIRED/);
   assert.equal((await connections.verifyCommentCapability(agency, connectionId, "controlled-7", "HIDE")).commentCapabilities.hideVerified, true);
-  assert.equal((await policyService.update(agency, connectionId, { enabled: true, autoReply: true, autoHide: true, minimumConfidence: 0.8, featureEnabled: true })).version, 2);
+  await assert.rejects(policyService.update(agency, connectionId, { enabled: true, autoReply: true, autoHide: true, allowDelete: true, minimumConfidence: 0.8, featureEnabled: true }), /COMMENT_DELETE_CAPABILITY_UNVERIFIED/);
+  assert.equal((await connections.verifyCommentCapability(agency, connectionId, "controlled-8", "DELETE")).commentCapabilities.deleteVerified, true);
+  assert.deepEqual(deleteCalls, ["controlled-8"]);
+  assert.equal((await policyService.update(agency, connectionId, { enabled: true, autoReply: true, autoHide: true, allowDelete: true, minimumConfidence: 0.8, featureEnabled: true })).version, 2);
   const productSourceId = ulid(); const productText = "Blue shirt · SKU BLUE-01 · Sizes S, M, L, XL · BDT 1,500";
   await db.insert(dbs.knowledgeSources).values({ id: productSourceId, businessId: ids.businessA, type: "PRODUCT_CATALOG", label: "Blue shirt catalog record", status: "READY", enabled: true, version: 1, sizeBytes: productText.length });
   await db.insert(dbs.knowledgeChunks).values({ id: ulid(), businessId: ids.businessA, sourceId: productSourceId, sourceVersion: 1, ordinal: 0, content: productText });
@@ -142,6 +146,16 @@ try {
   assert.ok(report.openReviews >= 2 && report.reviewQueue.some((row) => row.id === uncertainDecision.id));
   assert.equal((await commentAnalytics.summary(wrongTenant, connectionId)).received, 0);
   await assert.rejects(() => commentAnalytics.markReviewed(wrongTenant, uncertainDecision.id, "FOLLOW_UP_REQUIRED"), /COMMENT_DECISION_NOT_FOUND/);
+  await assert.rejects(manual.apply(agency, { commentId: first.id, requestId: ulid(), mode: "DELETE" }), /COMMENT_DELETE_CONFIRMATION_REQUIRED/);
+  const deleteRequest = ulid();
+  const deleted = await manual.apply(agency, { commentId: first.id, requestId: deleteRequest, mode: "DELETE", confirmDelete: true });
+  assert.equal((await manual.apply(agency, { commentId: first.id, requestId: deleteRequest, mode: "DELETE", confirmDelete: true })).decisionId, deleted.decisionId);
+  assert.equal(deleted.status, "COMPLETED"); assert.deepEqual(deleteCalls, ["controlled-8", "comment-1"]);
+  const deletedRow = (await db.select().from(dbs.facebookComments).where(eq(dbs.facebookComments.id, first.id)))[0]!;
+  assert.equal(deletedRow.state, "DELETED"); assert.equal(deletedRow.text, null);
+  const deleteDecision = (await db.select().from(dbs.commentDecisions).where(eq(dbs.commentDecisions.id, deleted.decisionId)))[0]!;
+  assert.equal(deleteDecision.outcome, "DELETE"); assert.equal(deleteDecision.actorId, ids.user); assert.equal(deleteDecision.actionStatus, "COMPLETED");
+  assert.ok((await db.select().from(dbs.auditLogs).where(and(eq(dbs.auditLogs.businessId, ids.businessA), eq(dbs.auditLogs.targetId, deleted.decisionId)))).length >= 2);
   authFailure = true;
   await assert.rejects(connections.verifyCredentials(agency, connectionId), /META_AUTH/);
   await assert.rejects(connections.verifyCredentials(agency, connectionId), /META_AUTH/);
@@ -152,5 +166,5 @@ try {
   assert.equal(await commentAnalytics.markReviewed(agency, uncertainDecision.id, "FOLLOW_UP_REQUIRED"), reviewId);
   await assert.rejects(() => commentAnalytics.markReviewed(agency, uncertainDecision.id, "EXTERNAL_CHECKED"), /REVIEW_ALREADY_RECORDED/);
   assert.equal((await commentAnalytics.summary(agency, connectionId)).openReviews, report.openReviews - 1);
-  console.log("Phase 7 comments: signed feed, scoped Graph context, version-pinned product mapping, stale-catalog rejection, manual reply/hide and replay, policy, audit/realtime passed");
+  console.log("Phase 7 comments: signed feed, scoped Graph context, version-pinned product mapping, stale-catalog rejection, manual reply/hide/delete, capability/policy gates, audit/realtime passed");
 } finally { await pool.end(); }

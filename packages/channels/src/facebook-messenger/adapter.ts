@@ -3,7 +3,7 @@ import { and, eq, lte } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ulid } from "ulid";
 import { z } from "zod";
-import { attachments, channelConnections, commentDecisions, conversations, facebookComments, messages, messengerSends, messengerThreads, rawInboundEvents } from "@agentos/database";
+import { attachments, channelConnections, commentDecisions, commentPolicies, conversations, facebookComments, messages, messengerSends, messengerThreads, rawInboundEvents } from "@agentos/database";
 import { toRuntimeEvent, universalEventSchema, type UniversalEvent, type AgentEvent } from "@agentos/events";
 import type { UniversalChannelAction } from "@agentos/actions";
 import type { ChannelAdapter, ChannelCapabilities, PresenceOperation } from "../index";
@@ -116,14 +116,19 @@ export class FacebookMessengerAdapter implements ChannelAdapter {
     await this.api.send(row.connection.externalPageId, await this.vault.resolve(context, row.connection.credentialRefId, "meta_page_token"), { recipient: { id: row.thread.senderId }, sender_action });
     return { status: "EXECUTED" as const };
   }
-  private async commentTarget(context: TrustedBusinessContext, commentId: string, decisionKey: string, outcome: "REPLY" | "HIDE") {
-    if (context.principal.kind !== "system" || context.principal.service !== "comment-processor" || !context.capabilityGrants.includes(outcome === "REPLY" ? "comment.reply" : "comment.hide")) throw new Error("COMMENT_ACTION_DENIED");
-    const row = (await this.db.select({ comment: facebookComments, connection: channelConnections, decision: commentDecisions, ownership: conversations.ownership }).from(commentDecisions).innerJoin(facebookComments, eq(facebookComments.id, commentDecisions.commentId)).innerJoin(channelConnections, eq(channelConnections.id, facebookComments.connectionId)).innerJoin(conversations, eq(conversations.id, facebookComments.conversationId)).where(and(eq(commentDecisions.businessId, context.businessId), eq(commentDecisions.commentId, commentId), eq(commentDecisions.idempotencyKey, decisionKey), eq(commentDecisions.outcome, outcome), eq(facebookComments.businessId, context.businessId), eq(channelConnections.businessId, context.businessId), eq(channelConnections.channel, FACEBOOK_MESSENGER), eq(conversations.businessId, context.businessId), eq(conversations.id, context.conversationId!))).limit(1))[0];
-    const manual = row?.decision.actorId !== "comment-processor" && row?.decision.safeReason === (outcome === "REPLY" ? "MANUAL_APPROVED_REPLY" : "MANUAL_APPROVED_HIDE");
+  private async commentTarget(context: TrustedBusinessContext, commentId: string, decisionKey: string, outcome: "REPLY" | "HIDE" | "DELETE") {
+    const grant = outcome === "REPLY" ? "comment.reply" : outcome === "HIDE" ? "comment.hide" : "comment.delete";
+    if (context.principal.kind !== "system" || context.principal.service !== "comment-processor" || !context.capabilityGrants.includes(grant)) throw new Error("COMMENT_ACTION_DENIED");
+    const row = (await this.db.select({ comment: facebookComments, connection: channelConnections, decision: commentDecisions, policy: commentPolicies, ownership: conversations.ownership }).from(commentDecisions).innerJoin(facebookComments, eq(facebookComments.id, commentDecisions.commentId)).innerJoin(channelConnections, eq(channelConnections.id, facebookComments.connectionId)).leftJoin(commentPolicies, and(eq(commentPolicies.businessId, facebookComments.businessId), eq(commentPolicies.connectionId, channelConnections.id))).innerJoin(conversations, eq(conversations.id, facebookComments.conversationId)).where(and(eq(commentDecisions.businessId, context.businessId), eq(commentDecisions.commentId, commentId), eq(commentDecisions.idempotencyKey, decisionKey), eq(commentDecisions.outcome, outcome), eq(facebookComments.businessId, context.businessId), eq(channelConnections.businessId, context.businessId), eq(channelConnections.channel, FACEBOOK_MESSENGER), eq(conversations.businessId, context.businessId), eq(conversations.id, context.conversationId!))).limit(1))[0];
+    const manualReason = outcome === "REPLY" ? "MANUAL_APPROVED_REPLY" : outcome === "HIDE" ? "MANUAL_APPROVED_HIDE" : "MANUAL_APPROVED_DELETE";
+    const manual = row?.decision.actorId !== "comment-processor" && row?.decision.safeReason === manualReason;
+    if (outcome === "DELETE" && !manual) throw new Error("COMMENT_ACTION_DENIED");
     if (!row || row.connection.agentId !== context.agentId || row.connection.state !== "CONNECTED" || row.connection.paused || (row.ownership !== "AI_ACTIVE" && !(manual && row.ownership === "HUMAN_ACTIVE")) || !row.connection.credentialRefId) throw new Error("COMMENT_ACTION_DENIED");
     const caps = row.connection.capabilities && typeof row.connection.capabilities === "object" && !Array.isArray(row.connection.capabilities) ? row.connection.capabilities as Record<string, unknown> : {};
     const approvedReason = outcome === "REPLY" ? "APPROVED_COMMENT_REPLY" : "HIGH_CONFIDENCE_SPAM";
-    if (!row.connection.grantedScopes.includes("pages_manage_engagement") || caps.commentReadVerified !== true || caps[outcome === "REPLY" ? "commentReplyVerified" : "commentHideVerified"] !== true || !(outcome === "REPLY" ? row.comment.canComment : row.comment.canHide) || (!manual && row.decision.safeReason !== approvedReason)) throw new Error("COMMENT_CAPABILITY_UNVERIFIED");
+    const verifiedKey = outcome === "REPLY" ? "commentReplyVerified" : outcome === "HIDE" ? "commentHideVerified" : "commentDeleteVerified";
+    const commentCapable = outcome === "REPLY" ? row.comment.canComment : outcome === "HIDE" ? row.comment.canHide : true;
+    if (!row.connection.grantedScopes.includes("pages_manage_engagement") || caps.commentReadVerified !== true || caps[verifiedKey] !== true || !commentCapable || (outcome === "DELETE" && row.policy?.allowDelete !== true) || (!manual && row.decision.safeReason !== approvedReason)) throw new Error("COMMENT_CAPABILITY_UNVERIFIED");
     return row;
   }
   private async claimComment(decisionId: string, businessId: string) { return (await this.db.update(commentDecisions).set({ actionStatus: "EXECUTING", updatedAt: new Date() }).where(and(eq(commentDecisions.id, decisionId), eq(commentDecisions.businessId, businessId), eq(commentDecisions.actionStatus, "PENDING"))).returning({ id: commentDecisions.id }))[0]; }
@@ -154,6 +159,24 @@ export class FacebookMessengerAdapter implements ChannelAdapter {
       const token = await this.vault.resolve(context, row.connection.credentialRefId!, "meta_page_token");
       if (!await this.api.hideComment(row.comment.externalCommentId, token)) throw new MetaApiError("META_REJECTED");
       await this.db.transaction(async (tx) => { await tx.update(commentDecisions).set({ actionStatus: "COMPLETED", externalActionId: row.comment.externalCommentId, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(commentDecisions.id, row.decision.id), eq(commentDecisions.businessId, context.businessId))); await tx.update(facebookComments).set({ isHidden: true, updatedAt: new Date() }).where(and(eq(facebookComments.id, commentId), eq(facebookComments.businessId, context.businessId))); });
+      return { status: "EXECUTED" as const, externalId: row.comment.externalCommentId };
+    } catch (error) { return this.commentFailure(row.decision.id, context.businessId, error); }
+  }
+  async deleteComment(context: TrustedBusinessContext, commentId: string, decisionKey: string) {
+    const row = await this.commentTarget(context, commentId, decisionKey, "DELETE");
+    if (row.decision.actionStatus === "COMPLETED") return { status: "EXECUTED" as const, externalId: row.comment.externalCommentId };
+    if (!this.api.getComment || !this.api.getPost || !this.api.deleteComment || !await this.claimComment(row.decision.id, context.businessId)) return { status: "SKIPPED" as const, safeReason: "COMMENT_RECONCILIATION_REQUIRED" };
+    try {
+      const token = await this.vault.resolve(context, row.connection.credentialRefId!, "meta_page_token");
+      const current = await this.api.getComment(row.comment.externalCommentId, token);
+      if (current.id !== row.comment.externalCommentId || !current.canRemove || !current.authorId || current.authorId === row.connection.externalPageId || !current.postId) throw new MetaApiError("META_PERMISSION");
+      const post = await this.api.getPost(current.postId, token);
+      if (post.id !== current.postId || post.authorId !== row.connection.externalPageId) throw new MetaApiError("META_PERMISSION");
+      if (!await this.api.deleteComment(current.id, token)) throw new MetaApiError("META_REJECTED");
+      await this.db.transaction(async (tx) => {
+        await tx.update(commentDecisions).set({ actionStatus: "COMPLETED", externalActionId: row.comment.externalCommentId, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(commentDecisions.id, row.decision.id), eq(commentDecisions.businessId, context.businessId)));
+        await tx.update(facebookComments).set({ state: "DELETED", text: null, updatedAt: new Date() }).where(and(eq(facebookComments.id, commentId), eq(facebookComments.businessId, context.businessId)));
+      });
       return { status: "EXECUTED" as const, externalId: row.comment.externalCommentId };
     } catch (error) { return this.commentFailure(row.decision.id, context.businessId, error); }
   }

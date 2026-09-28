@@ -131,7 +131,8 @@ try {
   assert.equal(bodies.filter((body) => "message" in body && JSON.stringify(body).includes("Ambiguous send")).length, 1);
   const unsupported = { id: ulid(), schemaVersion: "1.0" as const, type: "ReplyToMessage" as const, idempotencyKey: `unsupported:${ulid()}`, externalMessageId: sentReply, text: "Reply" };
   assert.equal((await adapter.execute(orderContext, unsupported)).safeReason, "CAPABILITY_UNAVAILABLE");
-  const oauth = await service.beginOAuth(agency, agentId); const state = new URL(oauth.url).searchParams.get("state")!;
+  const oauth = await service.beginOAuth(agency, agentId); const oauthScopes = new URL(oauth.url).searchParams.get("scope")!.split(","); const state = new URL(oauth.url).searchParams.get("state")!;
+  assert.ok(oauthScopes.includes("pages_read_engagement") && oauthScopes.includes("pages_manage_engagement"));
   const selection = await service.finishOAuth(agency, state, "fixture-code"); assert.equal(selection.pages.length, 1);
   assert.equal((await service.selectOAuthPage(agency, selection.stateId, selection.pages[0]!.id)).state, "DRAFT");
   await assert.rejects(service.selectOAuthPage(agency, selection.stateId, selection.pages[0]!.id), /OAUTH_STATE_INVALID/);

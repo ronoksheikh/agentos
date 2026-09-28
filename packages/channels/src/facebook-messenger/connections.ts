@@ -26,7 +26,7 @@ export class MetaConnectionService {
   private async assertAgent(context: TrustedBusinessContext, agentId: string) { const row = (await this.db.select({ id: agents.id, activeVersionId: agents.activeVersionId }).from(agents).where(and(eq(agents.id, agentId), eq(agents.businessId, context.businessId))).limit(1))[0]; if (!row?.activeVersionId) throw new Error("PUBLISHED_AGENT_REQUIRED"); }
   async setupInstructions(context: TrustedBusinessContext) { manager(context); const handshake = (await this.db.select({ appId: metaWebhookStatus.appId }).from(metaWebhookStatus).where(eq(metaWebhookStatus.appId, this.appId)).limit(1))[0]; return { callbackUrl: this.callbackUrl, graphVersion: META_GRAPH_VERSION, verifyTokenPresent: Boolean(process.env.META_WEBHOOK_VERIFY_TOKEN), ...(!handshake && process.env.META_WEBHOOK_VERIFY_TOKEN ? { initialVerificationToken: process.env.META_WEBHOOK_VERIFY_TOKEN } : {}) }; }
   async list(context: TrustedBusinessContext) { const rows = await this.db.select().from(channelConnections).where(and(eq(channelConnections.businessId, context.businessId), eq(channelConnections.channel, FACEBOOK_MESSENGER))); return rows.map((row) => this.safe(row)); }
-  private safe(row: typeof channelConnections.$inferSelect) { const caps = row.capabilities && typeof row.capabilities === "object" && !Array.isArray(row.capabilities) ? row.capabilities as Record<string, unknown> : {}; return { id: row.id, businessId: row.businessId, pageId: row.externalPageId, displayName: row.displayName, agentId: row.agentId, state: row.state, paused: row.paused, setupMethod: row.setupMethod, tokenPresent: Boolean(row.credentialRefId), grantedScopes: row.grantedScopes, commentCapabilities: { feedSubscribed: caps.commentFeedSubscribed === true, readVerified: caps.commentReadVerified === true, replyVerified: caps.commentReplyVerified === true, hideVerified: caps.commentHideVerified === true }, lastErrorCode: row.lastErrorCode, webhookVerifiedAt: row.webhookVerifiedAt?.toISOString() ?? null, testMessageReceived: Boolean(row.testMessageId && row.testConversationId), replyVerifiedAt: row.replyVerifiedAt?.toISOString() ?? null, lastVerifiedAt: row.lastVerifiedAt?.toISOString() ?? null, lastWebhookAt: row.lastWebhookAt?.toISOString() ?? null }; }
+  private safe(row: typeof channelConnections.$inferSelect) { const caps = row.capabilities && typeof row.capabilities === "object" && !Array.isArray(row.capabilities) ? row.capabilities as Record<string, unknown> : {}; return { id: row.id, businessId: row.businessId, pageId: row.externalPageId, displayName: row.displayName, agentId: row.agentId, state: row.state, paused: row.paused, setupMethod: row.setupMethod, tokenPresent: Boolean(row.credentialRefId), grantedScopes: row.grantedScopes, commentCapabilities: { feedSubscribed: caps.commentFeedSubscribed === true, readVerified: caps.commentReadVerified === true, replyVerified: caps.commentReplyVerified === true, hideVerified: caps.commentHideVerified === true, deleteVerified: caps.commentDeleteVerified === true }, lastErrorCode: row.lastErrorCode, webhookVerifiedAt: row.webhookVerifiedAt?.toISOString() ?? null, testMessageReceived: Boolean(row.testMessageId && row.testConversationId), replyVerifiedAt: row.replyVerifiedAt?.toISOString() ?? null, lastVerifiedAt: row.lastVerifiedAt?.toISOString() ?? null, lastWebhookAt: row.lastWebhookAt?.toISOString() ?? null }; }
   async manual(context: TrustedBusinessContext, input: { pageId: string; pageToken: string; agentId: string }) { manager(context); await this.assertAgent(context, input.agentId); const pageId = pageIdSchema.parse(input.pageId); tokenSchema.parse(input.pageToken); return this.create(context, { pageId, pageToken: input.pageToken, agentId: input.agentId, method: "MANUAL" }); }
   private async create(context: TrustedBusinessContext, input: { pageId: string; pageToken: string; agentId: string; method: z.infer<typeof setupMethod> }) {
     const current = (await this.db.select({ id: channelConnections.id, businessId: channelConnections.businessId, credentialRefId: channelConnections.credentialRefId }).from(channelConnections).where(and(eq(channelConnections.channel, FACEBOOK_MESSENGER), eq(channelConnections.externalPageId, input.pageId))).limit(1))[0];
@@ -43,7 +43,7 @@ export class MetaConnectionService {
     const state = randomBytes(32).toString("base64url"); const id = ulid();
     await this.db.insert(metaOauthStates).values({ id, stateHash: digest(state), businessId: context.businessId, agentId, actorId: actor(context), expiresAt: new Date(Date.now() + 10 * 60_000) });
     const url = new URL(`https://www.facebook.com/${META_GRAPH_VERSION}/dialog/oauth`);
-    url.search = new URLSearchParams({ client_id: this.appId, redirect_uri: this.redirectUri, state, response_type: "code", scope: "pages_show_list,pages_messaging,pages_manage_metadata" }).toString();
+    url.search = new URLSearchParams({ client_id: this.appId, redirect_uri: this.redirectUri, state, response_type: "code", scope: "pages_show_list,pages_messaging,pages_manage_metadata,pages_read_engagement,pages_manage_engagement" }).toString();
     await this.audit(context, "messenger.oauth.started", id);
     return { url: url.toString(), stateId: id };
   }
@@ -124,7 +124,7 @@ export class MetaConnectionService {
     await this.audit(context, "comment.feed.subscribed", id, { verifiedBy: "meta_api" });
     return this.safe(await this.require(context, id));
   }
-  async verifyCommentCapability(context: TrustedBusinessContext, id: string, externalCommentId: string, mode: "READ" | "REPLY" | "HIDE") {
+  async verifyCommentCapability(context: TrustedBusinessContext, id: string, externalCommentId: string, mode: "READ" | "REPLY" | "HIDE" | "DELETE") {
     manager(context); commentIdSchema.parse(externalCommentId);
     const row = await this.require(context, id);
     if (row.state !== "CONNECTED" || row.paused || !row.credentialRefId) throw new Error("PAGE_NOT_CONNECTED");
@@ -140,12 +140,13 @@ export class MetaConnectionService {
     if (post.id !== comment.postId || post.authorId !== row.externalPageId) throw new Error("COMMENT_TEST_TARGET_INVALID");
     if (mode === "REPLY" && (!comment.canComment || !this.api.replyComment)) throw new Error("COMMENT_REPLY_UNAVAILABLE");
     if (mode === "HIDE" && (!comment.canHide || comment.isHidden || !this.api.hideComment)) throw new Error("COMMENT_HIDE_UNAVAILABLE");
+    if (mode === "DELETE" && (!comment.canRemove || !this.api.deleteComment)) throw new Error("COMMENT_DELETE_UNAVAILABLE");
     if (mode === "READ") {
       await this.db.update(channelConnections).set({ grantedScopes: metadata.scopes, capabilities: sql`${channelConnections.capabilities} || ${JSON.stringify({ commentReadVerified: true })}::jsonb`, tokenExpiresAt: metadata.expiresAt ? new Date(metadata.expiresAt * 1000) : null, updatedAt: new Date() }).where(and(eq(channelConnections.id, id), eq(channelConnections.businessId, context.businessId)));
       await this.audit(context, "comment.read.verified", id, { source: "meta_graph", commentId: externalCommentId });
       return this.safe(await this.require(context, id));
     }
-    const stateKey = mode === "REPLY" ? "commentReplyTestState" : "commentHideTestState";
+    const stateKey = mode === "REPLY" ? "commentReplyTestState" : mode === "HIDE" ? "commentHideTestState" : "commentDeleteTestState";
     await this.db.transaction(async (tx) => {
       const locked = (await tx.select({ capabilities: channelConnections.capabilities }).from(channelConnections).where(and(eq(channelConnections.id, id), eq(channelConnections.businessId, context.businessId))).limit(1).for("update"))[0];
       const current = locked?.capabilities && typeof locked.capabilities === "object" && !Array.isArray(locked.capabilities) ? locked.capabilities as Record<string, unknown> : {};
@@ -154,9 +155,10 @@ export class MetaConnectionService {
       await tx.insert(auditLogs).values({ id: ulid(), businessId: context.businessId, actorId: actor(context), action: "comment.capability.test.started", targetType: "channel_connection", targetId: id, safeMetadata: { mode, commentId: externalCommentId } });
     });
     try {
-      const externalId = mode === "REPLY" ? (await this.api.replyComment!(externalCommentId, token, "AgentOS Page comment capability test.")).id : await this.api.hideComment!(externalCommentId, token) ? externalCommentId : null;
+      const externalId = mode === "REPLY" ? (await this.api.replyComment!(externalCommentId, token, "AgentOS Page comment capability test.")).id : mode === "HIDE" ? await this.api.hideComment!(externalCommentId, token) ? externalCommentId : null : await this.api.deleteComment!(externalCommentId, token) ? externalCommentId : null;
       if (!externalId) throw new Error("COMMENT_TEST_OUTCOME_UNKNOWN");
-      await this.db.update(channelConnections).set({ grantedScopes: metadata.scopes, capabilities: sql`${channelConnections.capabilities} || ${JSON.stringify({ [stateKey]: "VERIFIED", [mode === "REPLY" ? "commentReplyVerified" : "commentHideVerified"]: true })}::jsonb`, tokenExpiresAt: metadata.expiresAt ? new Date(metadata.expiresAt * 1000) : null, updatedAt: new Date() }).where(and(eq(channelConnections.id, id), eq(channelConnections.businessId, context.businessId)));
+      const capabilityKey = mode === "REPLY" ? "commentReplyVerified" : mode === "HIDE" ? "commentHideVerified" : "commentDeleteVerified";
+      await this.db.update(channelConnections).set({ grantedScopes: metadata.scopes, capabilities: sql`${channelConnections.capabilities} || ${JSON.stringify({ [stateKey]: "VERIFIED", [capabilityKey]: true })}::jsonb`, tokenExpiresAt: metadata.expiresAt ? new Date(metadata.expiresAt * 1000) : null, updatedAt: new Date() }).where(and(eq(channelConnections.id, id), eq(channelConnections.businessId, context.businessId)));
       await this.audit(context, "comment.capability.verified", id, { mode, commentId: externalCommentId, externalId });
       return this.safe(await this.require(context, id));
     } catch (error) {

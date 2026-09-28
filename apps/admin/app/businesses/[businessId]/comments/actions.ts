@@ -24,9 +24,9 @@ export async function performAgencyManualCommentAction(form: FormData) {
     const context = await agencyMetaContext(businessId);
     const commentId = ulidSchema.parse(String(form.get("commentId") ?? ""));
     const requestId = ulidSchema.parse(String(form.get("requestId") ?? ""));
-    const mode = z.enum(["REPLY", "HIDE"]).parse(form.get("mode"));
+    const mode = z.enum(["REPLY", "HIDE", "DELETE"]).parse(form.get("mode"));
     const text = mode === "REPLY" ? String(form.get("text") ?? "") : undefined;
-    await new PostgresManualCommentOperations(database, metaServices().adapter).apply(context, { commentId, requestId, mode, ...(text !== undefined ? { text } : {}) });
+    await new PostgresManualCommentOperations(database, metaServices().adapter).apply(context, { commentId, requestId, mode, ...(text !== undefined ? { text } : {}), ...(mode === "DELETE" ? { confirmDelete: form.get("confirmDelete") === "on" } : {}) });
     revalidatePath(`/businesses/${businessId}/comments`);
   } catch (error) { notice = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message.toLowerCase().replaceAll("_", "-") : "comment-action-failed"; }
   redirect(`/businesses/${encodeURIComponent(businessId)}/comments?notice=${notice}`);
