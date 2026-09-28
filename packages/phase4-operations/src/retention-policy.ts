@@ -9,11 +9,11 @@ export const businessRetentionPolicySchema = z.object({
   businessId: z.string().min(1), enabled: z.boolean(), revision: z.number().int().positive(),
   messagesDays: dayRule, eventPayloadDays: dayRule, traceDetailsDays: dayRule,
   realtimePayloadDays: dayRule, browserHistoryDays: dayRule, commentTextDays: dayRule,
-  customerContentDays: dayRule, orderNotesDays: dayRule, resolvedGoalsDays: dayRule, expiredAnnouncementsDays: dayRule, auditMetadataDays: dayRule,
+  customerContentDays: dayRule, orderNotesDays: dayRule, resolvedGoalsDays: dayRule, expiredAnnouncementsDays: dayRule, auditMetadataDays: dayRule, orderCheckoutDetailsDays: dayRule,
 });
 export type BusinessRetentionPolicy = z.infer<typeof businessRetentionPolicySchema>;
 type RetentionActor = { userId: string; grants: readonly string[]; allowedBusinessIds?: ReadonlySet<string> };
-const ruleFields = ["messagesDays", "eventPayloadDays", "traceDetailsDays", "realtimePayloadDays", "browserHistoryDays", "commentTextDays", "customerContentDays", "orderNotesDays", "resolvedGoalsDays", "expiredAnnouncementsDays", "auditMetadataDays"] as const;
+const ruleFields = ["messagesDays", "eventPayloadDays", "traceDetailsDays", "realtimePayloadDays", "browserHistoryDays", "commentTextDays", "customerContentDays", "orderNotesDays", "resolvedGoalsDays", "expiredAnnouncementsDays", "auditMetadataDays", "orderCheckoutDetailsDays"] as const;
 
 export class PostgresBusinessRetentionPolicies {
   constructor(private readonly database: NodePgDatabase) {}
@@ -24,7 +24,7 @@ export class PostgresBusinessRetentionPolicies {
   async get(actor: RetentionActor, businessId: string) {
     this.require(actor, businessId);
     const row = (await this.database.select().from(db.businessRetentionPolicies).where(eq(db.businessRetentionPolicies.businessId, businessId)).limit(1))[0];
-    return row ? businessRetentionPolicySchema.parse(row) : { businessId, enabled: false, revision: 0, messagesDays: null, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null, customerContentDays: null, orderNotesDays: null, resolvedGoalsDays: null, expiredAnnouncementsDays: null, auditMetadataDays: null };
+    return row ? businessRetentionPolicySchema.parse(row) : { businessId, enabled: false, revision: 0, messagesDays: null, eventPayloadDays: null, traceDetailsDays: null, realtimePayloadDays: null, browserHistoryDays: null, commentTextDays: null, customerContentDays: null, orderNotesDays: null, resolvedGoalsDays: null, expiredAnnouncementsDays: null, auditMetadataDays: null, orderCheckoutDetailsDays: null };
   }
   async set(actor: RetentionActor, input: Omit<BusinessRetentionPolicy, "revision"> & { expectedRevision: number; confirmScrub?: string }) {
     this.require(actor, input.businessId);
@@ -57,7 +57,7 @@ export class PostgresBusinessContentRetention {
       const categories = [
         ["messages", policy.messagesDays], ["eventPayloads", policy.eventPayloadDays], ["traceDetails", policy.traceDetailsDays],
         ["realtimePayloads", policy.realtimePayloadDays], ["browserHistory", policy.browserHistoryDays], ["commentText", policy.commentTextDays], ["customerContent", policy.customerContentDays],
-        ["orderNotes", policy.orderNotesDays], ["resolvedGoals", policy.resolvedGoalsDays], ["expiredAnnouncements", policy.expiredAnnouncementsDays], ["auditMetadata", policy.auditMetadataDays],
+        ["orderNotes", policy.orderNotesDays], ["resolvedGoals", policy.resolvedGoalsDays], ["expiredAnnouncements", policy.expiredAnnouncementsDays], ["auditMetadata", policy.auditMetadataDays], ["orderCheckoutDetails", policy.orderCheckoutDetailsDays],
       ] as const;
       for (const [category, days] of categories) {
         if (days === null) continue;
@@ -112,6 +112,16 @@ export class PostgresBusinessContentRetention {
         } else if (category === "auditMetadata") {
           const ids = await this.database.select({ id: db.auditLogs.id }).from(db.auditLogs).where(and(eq(db.auditLogs.businessId, policy.businessId), lte(db.auditLogs.occurredAt, cutoff), ne(db.auditLogs.action, "business.retention_policy.changed"), sql`${db.auditLogs.safeMetadata}->>'retentionRedacted' is distinct from 'true'`)).orderBy(db.auditLogs.occurredAt).limit(limit);
           if (ids.length) count = (await this.database.update(db.auditLogs).set({ safeMetadata: { retentionRedacted: true } }).where(and(eq(db.auditLogs.businessId, policy.businessId), inArray(db.auditLogs.id, ids.map((row) => row.id)), ne(db.auditLogs.action, "business.retention_policy.changed"), sql`${db.auditLogs.safeMetadata}->>'retentionRedacted' is distinct from 'true'`)).returning({ id: db.auditLogs.id })).length;
+        } else if (category === "orderCheckoutDetails") {
+          const [orders, pendingOrders] = await Promise.all([
+            this.database.select({ id: db.orders.id }).from(db.orders).where(and(eq(db.orders.businessId, policy.businessId), lte(db.orders.createdAt, cutoff), inArray(db.orders.status, ["DELIVERED", "CANCELLED", "FAILED", "EXPIRED"]), sql`${db.orders.fields} <> '{}'::jsonb`)).orderBy(db.orders.createdAt).limit(limit),
+            this.database.select({ id: db.pendingOrders.id }).from(db.pendingOrders).where(and(eq(db.pendingOrders.businessId, policy.businessId), lte(db.pendingOrders.updatedAt, cutoff), sql`${db.pendingOrders.state} not in ('COLLECTING_INFO','AWAITING_CONFIRMATION','CONFIRMED','HUMAN_ACTIVE')`, sql`${db.pendingOrders.fields} <> '{}'::jsonb`)).orderBy(db.pendingOrders.updatedAt).limit(limit),
+          ]);
+          const [orderRows, pendingRows] = await Promise.all([
+            orders.length ? this.database.update(db.orders).set({ fields: {}, updatedAt: now }).where(and(eq(db.orders.businessId, policy.businessId), inArray(db.orders.id, orders.map((row) => row.id)), lte(db.orders.createdAt, cutoff), inArray(db.orders.status, ["DELIVERED", "CANCELLED", "FAILED", "EXPIRED"]), sql`${db.orders.fields} <> '{}'::jsonb`)).returning({ id: db.orders.id }) : Promise.resolve([]),
+            pendingOrders.length ? this.database.update(db.pendingOrders).set({ fields: {}, updatedAt: now }).where(and(eq(db.pendingOrders.businessId, policy.businessId), inArray(db.pendingOrders.id, pendingOrders.map((row) => row.id)), lte(db.pendingOrders.updatedAt, cutoff), sql`${db.pendingOrders.state} not in ('COLLECTING_INFO','AWAITING_CONFIRMATION','CONFIRMED','HUMAN_ACTIVE')`, sql`${db.pendingOrders.fields} <> '{}'::jsonb`)).returning({ id: db.pendingOrders.id }) : Promise.resolve([]),
+          ]);
+          count = orderRows.length + pendingRows.length;
         } else {
           const [customers, identities, links, memories, summaries, pins, notes] = await Promise.all([
             this.database.select({ id: db.customers.id }).from(db.customers).where(and(eq(db.customers.businessId, policy.businessId), lte(db.customers.updatedAt, cutoff), sql`(${db.customers.displayName} is not null or cardinality(${db.customers.tags}) > 0)`)).orderBy(db.customers.updatedAt).limit(limit),

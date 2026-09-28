@@ -1,0 +1,1 @@
+ALTER TABLE "business_retention_policies" ADD COLUMN "order_checkout_details_days" integer;
