@@ -11,7 +11,7 @@ import { PostgresFeatureFlags } from "@agentos/feature-flags";
 import { CommentPolicyEngine, RuleCommentClassifier, type CommentClassifier, type CommentDecision } from "./index";
 
 type CommentEvent = Extract<UniversalEvent, { type: "comment.created" }>;
-type LoadedComment = { text: string; authorId: string | null; parentId: string | null; postId: string | null; postText: string | null; postScopeVerified: boolean; canComment: boolean; canHide: boolean; isHidden: boolean; readCode: string };
+type LoadedComment = { text: string; authorId: string | null; parentId: string | null; parentText: string | null; postId: string | null; postText: string | null; postScopeVerified: boolean; canComment: boolean; canHide: boolean; isHidden: boolean; readCode: string };
 
 export interface CommentWriteExecutor {
   reply(input: { event: CommentEvent; commentId: string; conversationId: string; decisionId: string; signal: AbortSignal }): Promise<{ externalId: string; runId?: string }>;
@@ -23,7 +23,7 @@ export class PostgresCommentProcessor {
   private readonly policy = new CommentPolicyEngine();
   constructor(private readonly db: NodePgDatabase, private readonly meta: MetaApi, private readonly vault: PostgresCredentialVault, private readonly realtime?: RealtimeBus, private readonly classifier: CommentClassifier = new RuleCommentClassifier(), private readonly writes?: CommentWriteExecutor) {}
   private async load(event: CommentEvent, connection: typeof dbs.channelConnections.$inferSelect): Promise<LoadedComment> {
-    const fallback: LoadedComment = { text: "", authorId: null, parentId: event.payload.externalParentId ?? null, postId: event.payload.externalPostId ?? null, postText: null, postScopeVerified: false, canComment: false, canHide: false, isHidden: false, readCode: "COMMENT_READ_UNAVAILABLE" };
+    const fallback: LoadedComment = { text: "", authorId: null, parentId: event.payload.externalParentId ?? null, parentText: null, postId: event.payload.externalPostId ?? null, postText: null, postScopeVerified: false, canComment: false, canHide: false, isHidden: false, readCode: "COMMENT_READ_UNAVAILABLE" };
     if (!connection.credentialRefId || !this.meta.getComment || !this.meta.getPost) return fallback;
     const context = createTrustedBusinessContext({ businessId: event.businessId, principal: { kind: "system", service: "comment-processor" }, source: "internal_system", agentId: connection.agentId, traceId: event.traceId, capabilityGrants: [] });
     try {
@@ -33,7 +33,13 @@ export class PostgresCommentProcessor {
       const postId = comment.postId ?? event.payload.externalPostId ?? null;
       const post = postId ? await this.meta.getPost(postId, token) : null;
       const postScopeVerified = Boolean(post && post.id === postId && post.authorId === connection.externalPageId && (!comment.postId || !event.payload.externalPostId || comment.postId === event.payload.externalPostId));
-      return { text: comment.message.slice(0, 20_000), authorId: comment.authorId ?? null, parentId: comment.parentId ?? event.payload.externalParentId ?? null, postId, postText: post?.message?.slice(0, 20_000) ?? null, postScopeVerified, canComment: comment.canComment, canHide: comment.canHide, isHidden: comment.isHidden, readCode: postScopeVerified ? "VERIFIED" : "POST_SCOPE_UNVERIFIED" };
+      const parentId = comment.parentId ?? event.payload.externalParentId ?? null;
+      let parentText: string | null = null;
+      if (parentId && parentId !== comment.id) {
+        try { const parent = await this.meta.getComment(parentId, token); if (parent.id === parentId && (!parent.postId || parent.postId === postId)) parentText = parent.message.slice(0, 20_000); }
+        catch { /* Parent context is optional; the current comment and verified post remain usable. */ }
+      }
+      return { text: comment.message.slice(0, 20_000), authorId: comment.authorId ?? null, parentId, parentText, postId, postText: post?.message?.slice(0, 20_000) ?? null, postScopeVerified, canComment: comment.canComment, canHide: comment.canHide, isHidden: comment.isHidden, readCode: postScopeVerified ? "VERIFIED" : "POST_SCOPE_UNVERIFIED" };
     } catch (error) {
       if (error instanceof MetaApiError && ["META_RATE_LIMIT", "META_TRANSIENT"].includes(error.safeCode)) throw Object.assign(new Error(error.safeCode), { code: error.safeCode });
       return { ...fallback, readCode: error instanceof MetaApiError ? error.safeCode : "COMMENT_READ_UNAVAILABLE" };
@@ -91,7 +97,7 @@ export class PostgresCommentProcessor {
       this.db.select({ state: dbs.businesses.state, disabled: dbs.businesses.disabled, trialStartedAt: dbs.businesses.trialStartedAt, trialEndsAt: dbs.businesses.trialEndsAt, trialExpiryBehavior: dbs.businesses.trialExpiryBehavior }).from(dbs.businesses).where(eq(dbs.businesses.id, event.businessId)).limit(1),
     ]);
     const configured = policy[0]; const capabilities = connection.capabilities && typeof connection.capabilities === "object" && !Array.isArray(connection.capabilities) ? connection.capabilities as Record<string, unknown> : {};
-    const classification = await this.classifier.classify({ text: loaded.text, postText: loaded.postText, signal });
+    const classification = await this.classifier.classify({ text: loaded.text, postText: loaded.postText, parentText: loaded.parentText, signal });
     const decided = this.policy.evaluate(classification, { enabled: configured?.enabled ?? false, autoReply: configured?.autoReply ?? false, autoHide: configured?.autoHide ?? false, allowDelete: configured?.allowDelete ?? false, minimumConfidence: configured?.minimumConfidence ?? 0.85, featureEnabled: flag, businessEligible: Boolean(business[0] && businessAutomationAllowed(business[0])), channelConnected: connection.state === "CONNECTED" && !connection.paused, verifiedRead: capabilities.commentReadVerified === true, verifiedReply: capabilities.commentReplyVerified === true, verifiedHide: capabilities.commentHideVerified === true, commentCanReply: loaded.canComment, commentCanHide: loaded.canHide, commentHidden: loaded.isHidden, postScopeVerified: loaded.postScopeVerified, verifiedExternalAuthor: Boolean(loaded.authorId && loaded.authorId !== connection.externalPageId), ...(conversation[0] ? { ownership: conversation[0].ownership } : {}) });
     const key = `comment:${connection.id}:${comment.externalCommentId}:policy:${configured?.version ?? 1}`;
     const id = ulid(); const inserted = await this.db.insert(dbs.commentDecisions).values({ id, businessId: event.businessId, commentId: comment.id, sourceEventId: event.id, classification, policyVersion: configured?.version ?? 1, outcome: decided.outcome, safeReason: loaded.readCode !== "VERIFIED" ? loaded.readCode : decided.safeReason, actionStatus: "PENDING", idempotencyKey: key, actorId: "comment-processor" }).onConflictDoNothing().returning({ id: dbs.commentDecisions.id });
