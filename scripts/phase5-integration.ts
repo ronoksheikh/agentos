@@ -172,7 +172,8 @@ try {
 
   const staleId = ulid(); await db.insert(schema.workItems).values({ id: staleId, businessId: ids.businessA, kind: "BROWSER", resourceId: ulid(), traceId: ulid(), state: "RUNNING", runAt: new Date(), updatedAt: new Date(Date.now() - 120_000) });
   assert.equal(await redisQueues.recover(60_000) >= 1, true); assert.equal((await store.getWork(ids.businessA, staleId)).state, "PENDING");
-  const deadId = ulid(); await db.insert(schema.workItems).values({ id: deadId, businessId: ids.businessA, kind: "EVENT", resourceId: ulid(), traceId: ulid(), state: "DEAD", runAt: new Date() });
+  const deadId = ulid(); await db.insert(schema.workItems).values({ id: deadId, businessId: ids.businessA, kind: "EVENT", resourceId: ulid(), traceId: ulid(), state: "PENDING", runAt: new Date() }); await store.finishWork(ids.businessA, deadId, "DEAD", "PROVIDER_UNAVAILABLE");
+  const deadNotice = (await db.select().from(schema.notifications).where(and(eq(schema.notifications.businessId, ids.businessA), eq(schema.notifications.type, "QUEUE_WORK_DEAD"))))[0]!; assert.deepEqual(deadNotice.safePayload, { kind: "EVENT", safeCode: "PROVIDER_UNAVAILABLE" }); await store.finishWork(ids.businessA, deadId, "DEAD", "PROVIDER_UNAVAILABLE"); assert.equal((await db.select().from(schema.notifications).where(and(eq(schema.notifications.businessId, ids.businessA), eq(schema.notifications.type, "QUEUE_WORK_DEAD")))).length, 1);
   const operations = new Phase5Operations(store);
   await assert.rejects(() => operations.replay({ userId, role: "SUPPORT" }, { businessId: ids.businessA, workId: deadId, dryRun: false }), /FORBIDDEN/);
   assert.equal((await operations.replay({ userId, role: "ADMIN" }, { businessId: ids.businessA, workId: deadId })).replayed, false);

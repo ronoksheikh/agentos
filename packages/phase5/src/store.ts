@@ -109,7 +109,12 @@ export class Phase5Store {
     return row ?? null;
   }
   async finishWork(businessId: string, workId: string, state: "COMPLETED" | "CANCELLED" | "DEAD", safeCode?: string) {
-    await this.db.update(dbs.workItems).set({ state, safeCode: safeCode ?? null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(dbs.workItems.businessId, businessId), eq(dbs.workItems.id, workId)));
+    await this.db.transaction(async (tx) => {
+      const finished = await tx.update(dbs.workItems).set({ state, safeCode: safeCode ?? null, completedAt: new Date(), updatedAt: new Date() }).where(and(eq(dbs.workItems.businessId, businessId), eq(dbs.workItems.id, workId))).returning({ kind: dbs.workItems.kind });
+      if (state !== "DEAD" || !finished.length) return;
+      const members = await tx.select({ userId: dbs.businessMemberships.userId }).from(dbs.businessMemberships).where(eq(dbs.businessMemberships.businessId, businessId));
+      if (members.length) await tx.insert(dbs.notifications).values(members.map(({ userId }) => ({ id: ulid(), businessId, userId, type: "QUEUE_WORK_DEAD", severity: "CRITICAL", dedupeKey: `work:${workId}:dead`, safePayload: { kind: finished[0]!.kind, safeCode: safeCode ?? "WORK_FAILED" } }))).onConflictDoNothing();
+    });
   }
   async reschedule(businessId: string, workId: string, at: Date, safeCode?: string) {
     await this.db.update(dbs.workItems).set({ state: "PENDING", runAt: at, safeCode: safeCode ?? null, updatedAt: new Date() }).where(and(eq(dbs.workItems.businessId, businessId), eq(dbs.workItems.id, workId)));
