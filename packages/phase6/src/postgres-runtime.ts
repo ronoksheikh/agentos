@@ -2,7 +2,7 @@ import { and, eq, desc, gt, inArray, isNull, lte, or } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { ulid } from "ulid";
 import * as dbs from "@agentos/database";
-import { agentSchema, agentVersionSchema, type Agent, type AgentVersion, type AgentVersionRepository } from "@agentos/agents";
+import { agentSchema, agentVersionSchema, evaluationRunSchema, type Agent, type AgentEvaluationRun, type AgentVersion, type AgentVersionRepository, type EvaluationResultRepository } from "@agentos/agents";
 import { agentActionSchema, type ActionRecord, type ActionRepository, type AgentAction, type DomainAction, type DomainActionHandler } from "@agentos/actions";
 import type { ContextSource } from "@agentos/context";
 import type { AgentEvent } from "@agentos/events";
@@ -19,6 +19,21 @@ export class PostgresAgentVersionRepository implements AgentVersionRepository {
   async getActiveVersion(context: TrustedBusinessContext, agentId: string) { const agent = await this.getAgent(context, agentId); return agent?.activeVersionId ? this.getVersion(context, agent.activeVersionId) : null; }
   async saveVersion(context: TrustedBusinessContext, version: AgentVersion) { scope(context, version.businessId); await this.db.insert(dbs.agentVersions).values({ id: version.id, businessId: version.businessId, agentId: version.agentId, version: version.version, state: version.state, config: version.config, createdBy: version.createdBy, ...(version.publishedAt ? { publishedAt: new Date(version.publishedAt) } : {}) }); }
   async selectPublishedVersion(context: TrustedBusinessContext, agentId: string, versionId: string, actorId: string) { const version = await this.getVersion(context, versionId); if (!version || version.agentId !== agentId) throw new Error("VERSION_NOT_FOUND"); await this.db.transaction(async (tx) => { await tx.update(dbs.agentVersions).set({ state: "ARCHIVED" }).where(and(eq(dbs.agentVersions.businessId, context.businessId), eq(dbs.agentVersions.agentId, agentId), eq(dbs.agentVersions.state, "PUBLISHED"))); await tx.update(dbs.agentVersions).set({ state: "PUBLISHED", publishedAt: new Date() }).where(and(eq(dbs.agentVersions.id, versionId), eq(dbs.agentVersions.businessId, context.businessId))); await tx.update(dbs.agents).set({ activeVersionId: versionId, updatedAt: new Date() }).where(and(eq(dbs.agents.id, agentId), eq(dbs.agents.businessId, context.businessId))); await tx.insert(dbs.auditLogs).values({ id: ulid(), businessId: context.businessId, actorId, action: "agent.version.published", targetType: "agent", targetId: agentId, safeMetadata: { versionId } }); }); }
+}
+
+/** Evaluation results deliberately persist only fixture IDs and safe outcomes, never fixture text or model context. */
+export class PostgresAgentEvaluationRepository implements EvaluationResultRepository {
+  constructor(private readonly db: NodePgDatabase) {}
+  async latestForVersion(businessId: string, agentVersionId: string): Promise<AgentEvaluationRun | null> {
+    const row = (await this.db.select({ result: dbs.agentEvaluationRuns.result }).from(dbs.agentEvaluationRuns).where(and(eq(dbs.agentEvaluationRuns.businessId, businessId), eq(dbs.agentEvaluationRuns.agentVersionId, agentVersionId))).orderBy(desc(dbs.agentEvaluationRuns.evaluatedAt)).limit(1))[0];
+    return row ? evaluationRunSchema.parse(row.result) : null;
+  }
+  async save(runInput: AgentEvaluationRun) {
+    const run = evaluationRunSchema.parse(runInput);
+    const version = (await this.db.select({ id: dbs.agentVersions.id }).from(dbs.agentVersions).where(and(eq(dbs.agentVersions.id, run.agentVersionId), eq(dbs.agentVersions.businessId, run.businessId), eq(dbs.agentVersions.agentId, run.agentId))).limit(1))[0];
+    if (!version) throw new Error("EVALUATION_VERSION_SCOPE_MISMATCH");
+    await this.db.insert(dbs.agentEvaluationRuns).values({ id: run.id, businessId: run.businessId, agentId: run.agentId, agentVersionId: run.agentVersionId, suiteVersion: run.suiteVersion, status: run.status, passedCases: run.passedCases, failedCases: run.failedCases, result: run, evaluatedAt: new Date(run.evaluatedAt) });
+  }
 }
 
 export class PostgresRuntimeContextSource implements ContextSource {

@@ -120,6 +120,13 @@
       "when": 1790249535008,
       "tag": "0016_luxuriant_dragon_man",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790577134856,
+      "tag": "0017_gigantic_wonder_man",
+      "breakpoints": true
     }
   ]
 }

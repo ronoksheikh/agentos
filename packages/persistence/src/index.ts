@@ -1,4 +1,4 @@
-import type { Agent, AgentVersion, AgentVersionRepository } from "@agentos/agents";
+import type { Agent, AgentVersion, AgentVersionRepository, AgentEvaluationRun, EvaluationResultRepository } from "@agentos/agents";
 import type { ActionRecord, ActionRepository, AgentAction } from "@agentos/actions";
 import type { Memory, MemoryRepository } from "@agentos/memory";
 import type { AgentRunRecord, AgentStepRecord, ToolCallRecord, TraceRepository } from "@agentos/trace";
@@ -6,12 +6,15 @@ import type { TrustedBusinessContext } from "@agentos/shared";
 
 const assertScope = (context: TrustedBusinessContext, businessId: string) => { if (context.businessId !== businessId) throw new Error("TENANT_SCOPE_VIOLATION"); };
 
-export class InMemoryAgentVersionRepository implements AgentVersionRepository {
+export class InMemoryAgentVersionRepository implements AgentVersionRepository, EvaluationResultRepository {
   readonly agents = new Map<string, Agent>(); readonly versions = new Map<string, AgentVersion>(); readonly audits: Array<{ businessId: string; agentId: string; versionId: string; actorId: string }> = [];
+  readonly evaluations: AgentEvaluationRun[] = [];
   seed(agent: Agent, versions: AgentVersion[]) { this.agents.set(agent.id, structuredClone(agent)); for (const version of versions) this.versions.set(version.id, structuredClone(version)); }
   async getAgent(context: TrustedBusinessContext, agentId: string) { const value = this.agents.get(agentId); if (!value || value.businessId !== context.businessId) return null; return structuredClone(value); }
   async getVersion(context: TrustedBusinessContext, versionId: string) { const value = this.versions.get(versionId); if (!value || value.businessId !== context.businessId) return null; return structuredClone(value); }
   async getActiveVersion(context: TrustedBusinessContext, agentId: string) { const agent = await this.getAgent(context, agentId); return agent?.activeVersionId ? this.getVersion(context, agent.activeVersionId) : null; }
+  async latestForVersion(businessId: string, agentVersionId: string) { return structuredClone(this.evaluations.filter((run) => run.businessId === businessId && run.agentVersionId === agentVersionId).at(-1) ?? null); }
+  async save(run: AgentEvaluationRun) { this.evaluations.push(structuredClone(run)); }
   async saveVersion(context: TrustedBusinessContext, version: AgentVersion) { assertScope(context, version.businessId); if (this.versions.has(version.id)) throw new Error("IMMUTABLE_VERSION_EXISTS"); this.versions.set(version.id, structuredClone(version)); }
   async selectPublishedVersion(context: TrustedBusinessContext, agentId: string, versionId: string, actorId: string) { const agent = await this.getAgent(context, agentId); const version = await this.getVersion(context, versionId); if (!agent || !version || version.agentId !== agentId) throw new Error("Version unavailable"); for (const value of this.versions.values()) if (value.agentId === agentId && value.state === "PUBLISHED") value.state = "ARCHIVED"; version.state = "PUBLISHED"; version.publishedAt = new Date().toISOString(); this.versions.set(versionId, version); agent.activeVersionId = versionId; agent.updatedAt = new Date().toISOString(); this.agents.set(agentId, agent); this.audits.push({ businessId: context.businessId, agentId, versionId, actorId }); }
 }

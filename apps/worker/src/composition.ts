@@ -9,7 +9,7 @@ import { LayeredContextEngine } from "@agentos/context";
 import { PostgresCommentProcessor, PostgresCommentWriteExecutor, RuleCommentClassifier } from "@agentos/comments";
 import { DefaultKnowledgeParser } from "@agentos/knowledge";
 import { CircuitBreakerModelProvider, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint } from "@agentos/models";
-import { PostgresAgentVersionRepository, PostgresRealtimeBus, PostgresRuntimeActionRepository, PostgresRuntimeContextSource, PostgresRuntimeDomainActions, PostgresRuntimeTraceRepository } from "@agentos/phase6";
+import { PostgresAgentEvaluationRepository, PostgresAgentVersionRepository, PostgresRealtimeBus, PostgresRuntimeActionRepository, PostgresRuntimeContextSource, PostgresRuntimeDomainActions, PostgresRuntimeTraceRepository } from "@agentos/phase6";
 import { PostgresAttachmentRepository, PostgresBrowserRepository, PostgresExpiredContentRetention } from "@agentos/phase4-operations";
 import { ToolRegistry, type ToolExecutionContext } from "@agentos/tools";
 import { BrowserCoordinator, RemoteBrowserAdapter, createWebTools, type BrowserPolicy } from "@agentos/web";
@@ -61,7 +61,7 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
     for (const tool of createWebTools({ async search() { throw new Error("SEARCH_PROVIDER_UNAVAILABLE"); } }, new PinnedUrlReader(), browser, () => []).filter((tool) => tool.category === "browser")) tools.register(tool);
   }
   const runtime = new AgentRuntime({
-    versions: new AgentVersionService(new PostgresAgentVersionRepository(db)),
+    versions: new AgentVersionService(new PostgresAgentVersionRepository(db), new PostgresAgentEvaluationRepository(db)),
     contextEngine: new LayeredContextEngine(new PostgresRuntimeContextSource(db)),
     models: modelProvider,
     tools,

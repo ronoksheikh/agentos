@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isoDateTimeSchema, ulidSchema, type TrustedBusinessContext } from "@agentos/shared";
+import { assertEvaluationAllowsPublish, type EvaluationResultRepository } from "./evaluation";
 
 export const agentVersionStateSchema = z.enum(["DRAFT", "TEST", "PUBLISHED", "ARCHIVED"]);
 export const runtimeLimitsSchema = z.object({
@@ -48,6 +49,8 @@ export const agentVersionSchema = z.object({ id: ulidSchema, businessId: ulidSch
 export type Agent = z.infer<typeof agentSchema>;
 export type AgentVersion = z.infer<typeof agentVersionSchema>;
 export type AgentVersionConfig = z.infer<typeof agentVersionConfigSchema>;
+export { AGENT_EVALUATION_SUITE_VERSION, agentEvaluationCases, evaluationObservationSchema, evaluationCaseResultSchema, evaluationRunSchema, runAgentEvaluation, assertEvaluationAllowsPublish } from "./evaluation";
+export type { AgentEvaluationCase, AgentEvaluationRun, EvaluationObservation, EvaluationResultRepository } from "./evaluation";
 
 export interface AgentVersionRepository {
   getAgent(context: TrustedBusinessContext, agentId: string): Promise<Agent | null>;
@@ -58,7 +61,7 @@ export interface AgentVersionRepository {
 }
 
 export class AgentVersionService {
-  constructor(private readonly repository: AgentVersionRepository) {}
+  constructor(private readonly repository: AgentVersionRepository, private readonly evaluations?: EvaluationResultRepository) {}
   async resolve(context: TrustedBusinessContext, agentId: string, testVersionId?: string): Promise<AgentVersion> {
     const version = testVersionId ? await this.repository.getVersion(context, testVersionId) : await this.repository.getActiveVersion(context, agentId);
     if (!version || version.agentId !== agentId || version.businessId !== context.businessId) throw new Error("Agent version is unavailable in this business");
@@ -69,6 +72,8 @@ export class AgentVersionService {
   async publish(context: TrustedBusinessContext, agentId: string, versionId: string, actorId: string): Promise<void> {
     const version = await this.repository.getVersion(context, versionId);
     if (!version || version.agentId !== agentId || version.state === "ARCHIVED") throw new Error("Version cannot be published");
+    if (!this.evaluations) throw new Error("CURRENT_EVALUATION_REQUIRED");
+    assertEvaluationAllowsPublish(await this.evaluations.latestForVersion(context.businessId, versionId), version);
     await this.repository.selectPublishedVersion(context, agentId, versionId, actorId);
   }
 }
