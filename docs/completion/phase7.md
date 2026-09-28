@@ -34,10 +34,10 @@ Notification producers use the existing notification table; stale deadlines use 
 
 ## Validation evidence
 
-Latest repository checks after content retention expansion:
+Latest repository checks after order checkout-data retention expansion:
 
 - `bun run check` — passed, 96 tests and 528 assertions, including experimental-tool gating, runtime model-variant selection, Graph deletion shape, classifier usage accounting, and checks that review-only model labels cannot authorize writes or deletion.
-- `bun run admin:build` — passed with the runtime flag controls, agent workflow, comment delete capability and policy controls, manager delete action, and the new retention controls for order notes, closed goals, and expired announcements.
+- `bun run admin:build` — passed with the runtime flag controls, agent workflow, comment delete capability and policy controls, manager delete action, and retention controls for order notes, closed goals, expired announcements, audit metadata, and terminal-order checkout fields.
 - `bun run client:build` — passed with the manager-confirmed review-queue delete control. Next.js still warns that it inferred `/Users/ronoksheik/pnpm-lock.yaml` as the workspace root and reports the existing optional `@valkey/valkey-glide` resolution warning from BullMQ; compilation and type checks completed.
 - Fresh disposable PostgreSQL 16 migrations plus `scripts/phase7-client-analytics-integration.ts` — passed scoped analytics, delivery-qualified response timing, user/tenant inbox isolation, handoff/stale/dead-queue notification deduplication, acknowledgement authorization, and handoff idempotency.
 - Fresh disposable PostgreSQL 16 migrations plus `scripts/phase7-comments-integration.ts` — passed signed feed, dedupe, scoped Graph context, verified parent text and version-pinned product context reaching classifier/reply drafting, content-free classifier usage persistence, cross-tenant and stale/multi-item mapping rejection, safe keep/handoff, runtime reply, manual reply/hide/delete with actor attribution and idempotency, delete policy denial before capability verification, missing-confirmation denial, text clearing after deletion, uncertain outcome handling, author/human ownership guards, audit/realtime, and reauthorization-notification deduplication.
