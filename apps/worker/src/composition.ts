@@ -10,7 +10,7 @@ import { PostgresCommentProcessor, PostgresCommentWriteExecutor, RuleCommentClas
 import { DefaultKnowledgeParser } from "@agentos/knowledge";
 import { CircuitBreakerModelProvider, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint } from "@agentos/models";
 import { PostgresAgentEvaluationRepository, PostgresAgentVersionRepository, PostgresRealtimeBus, PostgresRuntimeActionRepository, PostgresRuntimeContextSource, PostgresRuntimeDomainActions, PostgresRuntimeTraceRepository } from "@agentos/phase6";
-import { PostgresAttachmentRepository, PostgresBrowserRepository, PostgresExpiredContentRetention } from "@agentos/phase4-operations";
+import { PostgresAttachmentRepository, PostgresBrowserRepository, PostgresBusinessContentRetention, PostgresExpiredContentRetention } from "@agentos/phase4-operations";
 import { ToolRegistry, type ToolExecutionContext } from "@agentos/tools";
 import { BrowserCoordinator, RemoteBrowserAdapter, createWebTools, type BrowserPolicy } from "@agentos/web";
 import { PinnedUrlReader } from "@agentos/web";
@@ -70,5 +70,6 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
   });
   const commentProcessor = new PostgresCommentProcessor(db, api, vault, realtime, new RuleCommentClassifier(), new PostgresCommentWriteExecutor(db, runtime, registry));
   const featureFlags = new PostgresFeatureFlags(db);
-  return { db, redisUrl, runtime, registry, presence, realtime, attachment, comments: (event, signal) => commentProcessor.process(event, signal).then(() => {}), trialSweep: () => new PostgresTrialService(db).expireDue(), retentionSweep: () => new PostgresExpiredContentRetention(db, storage).sweep().then(() => {}), providerCircuitState: () => modelProvider.status().state, capabilities: (businessId) => runtimeCapabilityGrants(featureFlags, businessId, Boolean(browserUrl)) };
+  const expiredContentRetention = new PostgresExpiredContentRetention(db, storage); const businessContentRetention = new PostgresBusinessContentRetention(db);
+  return { db, redisUrl, runtime, registry, presence, realtime, attachment, comments: (event, signal) => commentProcessor.process(event, signal).then(() => {}), trialSweep: () => new PostgresTrialService(db).expireDue(), retentionSweep: async () => { await expiredContentRetention.sweep(); await businessContentRetention.sweep(); }, providerCircuitState: () => modelProvider.status().state, capabilities: (businessId) => runtimeCapabilityGrants(featureFlags, businessId, Boolean(browserUrl)) };
 }

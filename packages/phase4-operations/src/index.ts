@@ -158,3 +158,5 @@ export class PostgresGoalContextReader {
 }
 
 export { PostgresExpiredContentRetention } from "./retention";
+export { PostgresBusinessContentRetention, PostgresBusinessRetentionPolicies, businessRetentionPolicySchema } from "./retention-policy";
+export type { BusinessRetentionPolicy } from "./retention-policy";

@@ -1,24 +1,36 @@
 # Phase 7 retention inventory
 
-## Implemented cleanup
+## Scheduled cleanup
 
-The worker runs `PostgresExpiredContentRetention.sweep()` at startup and every minute, one bounded batch of up to 100 attachments and 100 knowledge sources each time. It does not overlap sweep runs. One failed sweep emits only a safe error code and does not stop event processing. The database remains the source of truth.
+The worker runs expiry cleanup and age based content scrubbing at startup and every minute. Each pass is limited to 100 rows per category per business. A failed pass logs a safe error code and does not stop event processing. Scrubbing is idempotent across repeated passes and worker instances.
 
 | Data | Expiry source | Result |
 | --- | --- | --- |
-| Raw inbound envelope metadata | `raw_inbound_events.retention_until` (currently seven days at ingress) | Existing hourly Phase 5 sweep removes payload hash, external event ID, and byte count, and records `PURGED`; dedupe key and processing status remain. |
+| Raw inbound envelope metadata | `raw_inbound_events.retention_until` (seven days at ingress) | Existing Phase 5 sweep removes payload hash, external event ID, and byte count; dedupe key and processing status remain. |
 | Web Chat rate counters | Bucket `expires_at` | Existing Phase 5 sweep deletes old buckets. |
-| Attachment object and derived transcript/vision/document text | `attachments.retention_until` | New sweep deletes the tenant-prefixed private object, derived artifacts, and attachment row after expiry, then writes a scoped audit record. In-flight `DOWNLOADING`/`PROCESSING` rows are skipped until terminal. |
-| Knowledge source and indexed chunks | `knowledge_sources.retention_until` | New sweep deletes all chunks, clears title/URL/checksum/size, marks source `DELETED` and disabled, and writes a scoped audit record. |
+| Attachment object and derived transcript/vision/document text | `attachments.retention_until` | Deletes the tenant-prefixed private object, derived artifacts, and attachment row after expiry, then writes a scoped audit record. In-flight rows are skipped until terminal. |
+| Knowledge source and indexed chunks | `knowledge_sources.retention_until` | Deletes chunks, clears title/URL/checksum/size, marks the source deleted and disabled, and writes an audit record. |
+| Message text and lifecycle details | Per-business `messages_days` | Clears old message text and lifecycle details, retaining message IDs, routing state, and idempotency identifiers. |
+| Processed universal event payload/source | Per-business `event_payload_days` | Scrubs processed events only. Pending or unprocessed events remain intact. Event IDs, type, state, and dedupe keys remain. |
+| Completed run, step, tool, and action details | Per-business `trace_details_days` | Clears step facts, tool input/output/error, action payload, and safe run error. Run status and usage remain; running jobs are excluded. |
+| Realtime and client projection payloads | Per-business `realtime_payload_days` | Replaces old payloads while preserving event type, sequence, and replay ordering. |
+| Browser URLs | Per-business `browser_history_days` | Clears old safe URLs while keeping status/action codes. Browser screenshots live in bounded tmpfs and are removed when sessions close or the worker container restarts. |
+| Facebook comment text and author IDs | Per-business `comment_text_days` | Clears old comment text and author external IDs and replaces linked classifier details with a redacted marker. Decision state/action result remain. |
 
-The attachment and knowledge source APIs already refuse or exclude expired content before the physical sweep. A failed object deletion leaves the database row for retry, preventing a false record of completed deletion. Object keys are checked against business and attachment IDs before deletion. Audit entries carry IDs and counts/state only, not the deleted content.
+Attachment and knowledge APIs exclude expired content before the physical sweep. A failed private object deletion leaves its row for retry. Object keys are checked against business and attachment IDs. Audit entries retain only IDs, counts, category, cutoff, and policy revision.
+
+## Business policy controls
+
+Migration `0018_nostalgic_nicolaos.sql` adds `business_retention_policies`. Policy is disabled by default, and each category remains unset until an agency ADMIN or SUPER_ADMIN configures it on the Content Retention page. Enabling scheduled scrubbing requires explicit confirmation. Empty category rules retain that content. Policy edits are revision checked and audited. Trial expiry does not enable or run these rules.
 
 ## Remaining policy and deletion work
 
-The current expiry values are set per record. There is not yet a business-level retention policy for messages, universal event payloads, traces/tool inputs, realtime projections, comments, browser history, orders, customer data, and audit logs. Some records have no expiry, so the scheduled sweep does **not** make per-business retention policy complete. A restricted operator purge now exists after export and legal-hold review; see `docs/phase7-offboarding.md`. It removes business-scoped database rows and private media while retaining one global deletion audit row. Backup copies and external-provider records are governed separately; do not claim complete legal erasure until those systems and backups have expired or been independently erased.
+Age rules do not yet cover customer profile/identity fields, memories, summaries, pins, order details and notes, business announcements, audit logs, or backup copies. Those classes need a retention schedule that accounts for operations, accounting, legal holds, and idempotency before automated cleanup is enabled. A restricted operator purge exists after export and legal-hold review; see `docs/phase7-offboarding.md`. It removes business-scoped database rows and private media while retaining one global deletion audit row. External-provider records and backups are governed separately; complete legal erasure cannot be claimed until they expire or are independently erased.
 
-Before enabling broader scheduled deletion, add a reviewed per-business policy and classify every dependent table by required idempotency, financial, legal, and audit retention. Redact or delete content in dependency order; retain only minimal IDs needed for deduplication and compliance. Revoke channel credentials and visitor sessions, disable sites/automation, drain work and unknown sends, export permitted data, then execute and verify the approved deletion plan, including backups at their expiry. A trial expiry must never trigger deletion.
+Before an approved offboarding purge, revoke channel credentials and visitor sessions, disable sites/automation, drain work and unknown sends, export permitted data, then verify the approved deletion plan. Trial expiry must never trigger data deletion.
 
 ## Verification
 
-`DATABASE_URL=...agentos_phase7_retention_... bun scripts/phase7-retention-integration.ts` on a freshly migrated disposable database inserted two businesses, one expired and one current attachment and knowledge source. It verified object and artifact deletion, chunk deletion, scrubbed source metadata, two scoped audit rows, survival of the other business's data, and a zero-change second sweep. This does not cover a production object store or legal offboarding signoff.
+`bun run db:phase7-retention` on disposable PostgreSQL 16 verified attachment/object and knowledge/chunk cleanup, scoped audit records, cross-tenant survival, and a zero-change second sweep.
+
+`DATABASE_URL=<disposable PostgreSQL URL> bun run db:phase7-retention-policy` verified policy default-off, explicit confirmation, authorization, revision conflict, tenant isolation, pending-event preservation, payload scrubbing, audit metadata, and repeated-sweep idempotency. Neither drill used a production object store or performed legal offboarding signoff.
