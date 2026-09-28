@@ -20,6 +20,22 @@ describe("Phase 7 provider configuration", () => {
     expect(JSON.stringify(result)).not.toContain("test-key");
   });
 
+  it("applies the immutable agent instructions, tone, language, and disclosure policy as system instructions", async () => {
+    let sent: { instructions: string; input: string } | undefined;
+    const fetcher = fakeFetch(async (_input, init) => {
+      sent = JSON.parse(String(init?.body)) as { instructions: string; input: string };
+      return reply([text('{"kind":"actions","actions":[{"type":"SendMessage","text":"Bonjour"}]}')]);
+    });
+    const version = createAgentFixture({ instructions: "Explain return windows accurately.", tone: "warm and concise", languages: ["en", "fr"], models: { primary: { provider: "openai", model: "primary" } }, disclosurePolicy: { discloseWhenAsked: true, statement: "I am Acme's automated assistant." } }).version;
+    const result = await new OpenAIResponsesProvider({ apiKey: "test-key", fetch: fetcher }).generate({ ...request(), version });
+    expect(result.kind).toBe("actions");
+    expect(sent?.instructions).toContain("Explain return windows accurately.");
+    expect(sent?.instructions).toContain("Tone: warm and concise");
+    expect(sent?.instructions).toContain("en, fr");
+    expect(sent?.instructions).toContain("I am Acme's automated assistant.");
+    expect(sent?.input).not.toContain("Explain return windows accurately.");
+  });
+
   it("accepts native function calls and never passes provider arguments as trusted actions", async () => {
     const fetcher = fakeFetch(async () => reply([{ type: "function_call", name: "demo_lookup", arguments: '{"query":"item"}', call_id: "call_1", status: "completed" }]));
     const result = await new OpenAIResponsesProvider({ apiKey: "test-key", fetch: fetcher }).generate({ ...request(), tools: [{ name: "demo_lookup", description: "Look up an item", inputSchema: { type: "object", properties: { query: { type: "string" } } } }] });
