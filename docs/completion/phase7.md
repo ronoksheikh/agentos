@@ -41,7 +41,7 @@ Latest repository checks after the notification and parent-context changes:
 - `scripts/phase7-webchat-integration.ts` and its built Next.js HTTP drill passed controlled local origin bootstrap/send/dedupe/poll/revocation, tenant and origin controls, fake-model adapter execution, handoff suppression, and human reply visibility.
 - Disposable PostgreSQL drills for trial, comments, feature flags, evaluations, retention, backup/restore, offboarding, provider configuration, and health are described in their `docs/phase7-*.md` records.
 
-The latest full `bun run db:phase5-smoke` run did **not** finish: after the new terminal run-failure notification was observed in PostgreSQL with the expected `UNAVAILABLE` safe code, the existing forty-job fairness part timed out with BullMQ lock-renewal and missing-lock errors. The focused analytics/notification PostgreSQL drill separately verifies dead-work notification deduplication. Re-run and resolve the full Phase 5 PostgreSQL/Redis integration before release; do not describe that latest full run as passing.
+The full `bun run db:phase5-smoke` passed on a fresh disposable PostgreSQL 16 database and an isolated Redis 8.10.2 instance. It covered signed-inbound batching, notification failure/retry, lease replacement, 40-conversation fairness across two businesses, recovery, replay authorization, and one-shot goals. A prior run against a different local service setup timed out in the fairness section; the isolated rerun completed successfully.
 
 ## Security and operational decisions
 
@@ -58,15 +58,14 @@ The latest full `bun run db:phase5-smoke` run did **not** finish: after the new 
 2. **Live Meta Page:** Supply an approved Meta app and authorized Page/token with the required scopes, subscribe the Page feed, receive a signed controlled comment, run read/reply/hide tests, observe the Page result, and verify Page-authored replies do not loop. This was not available, so no live Meta write is claimed.
 3. **Website Chat acceptance:** Embed the production SDK on an authorized merchant staging site, verify origin/CORS and visitor experience, and observe a human reply through its polling client. Local HTTP tests are not merchant-site acceptance.
 4. **Browser model-backed research:** Supply an approved compatible endpoint/key and verify bounded `browser_research` output on a controlled site. The AgentOS Responses probe does not establish Browser Use Chat Completions compatibility.
-5. **Comment workflow gaps:** Verified post-to-product mapping and actionable manual reply/moderation overrides are not implemented. The rule classifier is conservative and has no production quality comparison. Deletion remains intentionally unavailable.
+5. **Comment workflow gaps:** Verified post-to-product mapping remains unimplemented. The rule classifier is conservative and has no production quality comparison. Deletion remains intentionally unavailable.
 6. **Analytics limits:** Validated conversation question categories, customer objections, attributed conversion/revenue, and cost estimates are unavailable in the persisted source data. Do not infer them from comment categories or unrelated orders.
 7. **Reserved flags:** `experimental_tools` and `runtime_variant` have disabled defaults but no production consumers. They remain hidden from the agency form.
 8. **Retention scope:** Order/order-note, active-goal, business-announcement, audit-age, and backup-copy retention remain separate policy work. External identity keys remain for routing/dedupe.
-9. **Integration rerun:** Fix the latest full Phase 5 Redis fairness/lock failure and rerun the PostgreSQL/Redis smoke. The earlier notification fixture was observed before that later failure, but the full script did not pass.
-10. **Optional classifier model:** Either wire `OPENAI_CLASSIFIER_MODEL` to a validated classifier adapter with policy tests or remove the inert setting; today the typed comment classifier is deterministic rules only.
+9. **Optional classifier model:** Either wire `OPENAI_CLASSIFIER_MODEL` to a validated classifier adapter with policy tests or remove the inert setting; today the typed comment classifier is deterministic rules only.
 
 Other explicit contracts, definitions, and operating procedures are in `docs/phase7-browser-use.md`, `docs/phase7-webchat.md`, `docs/phase7-comments.md`, `docs/phase7-metrics.md`, `docs/phase7-notifications.md`, `docs/phase7-trial.md`, `docs/phase7-flags.md`, `docs/phase7-evaluations.md`, `docs/phase7-health.md`, `docs/phase7-retention.md`, `docs/phase7-backup.md`, and `docs/phase7-offboarding.md`.
 
 ## Phase 7 commits
 
-The Phase 7 implementation commits from Browser Use cutover through the notification/context work are recorded in `git log`; the range includes `ffd4360` (Browser Use cutover), `340f438` (production Website Chat), `f5cdab9` (comment processing), provider and operations milestones through `08b523d`, and the latest slices `e94e45d`, `a4ab934`, `1aba0d1`, `af8e86f`, `711d5ce`, and `96c2a2d`. No push, PR, or deployment was performed.
+The Phase 7 implementation commits from Browser Use cutover through the notification/context work are recorded in `git log`; the range includes `ffd4360` (Browser Use cutover), `340f438` (production Website Chat), `f5cdab9` (comment processing), provider and operations milestones through `08b523d`, notification/context slices through `96c2a2d`, manual comment actions `f2ac7f0`, and upstream Browser Use guidance `fd25d58`. No push, PR, or deployment was performed.
