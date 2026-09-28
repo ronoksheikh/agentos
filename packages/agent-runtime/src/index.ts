@@ -29,7 +29,7 @@ export class AgentRuntime {
   async run(input: AgentRunInput): Promise<AgentRunResult> {
     const started = Date.now(); const startedAt = nowIso(); const runId = ulid(); const event = agentEventSchema.parse(input.event); const trusted = input.context;
     if (event.businessId !== trusted.businessId || input.agentId !== trusted.agentId) throw new Error("TRUSTED_SCOPE_MISMATCH");
-    if (input.draftOnly && !(trusted.principal.kind === "system" && trusted.principal.service === "comment-processor")) throw new Error("DRAFT_MODE_DENIED");
+    if (input.draftOnly && !(trusted.principal.kind === "system" && ["comment-processor", "evaluation"].includes(trusted.principal.service))) throw new Error("DRAFT_MODE_DENIED");
     const version = await this.deps.versions.resolve(trusted, input.agentId, input.testVersionId); const usage = { inputTokens: 0, outputTokens: 0, toolCalls: 0, steps: 0, latencyMs: 0 }; let sequence = 0; let contextBundle: ContextBundle | undefined; const toolResults: SafeToolResult[] = []; const actions: AgentAction[] = [];
     const publish = (type: Parameters<RealtimeBus["publish"]>[0]["type"], payload: JsonValue) => this.deps.realtime.publish({ type, businessId: trusted.businessId, ...(trusted.conversationId ? { conversationId: trusted.conversationId } : {}), runId, traceId: trusted.traceId, payload });
     const step = async (kind: "CONTEXT" | "MODEL" | "TOOL" | "ACTION" | "STATE", status: "STARTED" | "COMPLETED" | "FAILED", safeFacts: JsonValue) => { await this.deps.traces.appendStep(trusted, { id: ulid(), businessId: trusted.businessId, runId, traceId: trusted.traceId, sequence: ++sequence, kind, status, safeFacts: redactSafe(safeFacts), occurredAt: nowIso() }); };
@@ -67,3 +67,5 @@ export class AgentRuntime {
     return { runId, agentVersionId: version.id, context: { businessId: trusted.businessId, agentId: input.agentId, ...(trusted.conversationId ? { conversationId: trusted.conversationId } : {}), ...(trusted.customerId ? { customerId: trusted.customerId } : {}), traceId: trusted.traceId }, event, mode: input.testVersionId ? "TEST" : "LIVE", actions, status: finalStatus, usage, timing: { startedAt, completedAt }, ...(safeError ? { safeError } : {}), ...(input.debug && contextBundle ? { debug: { context: contextBundle } } : {}) };
   }
 }
+
+export { AgentRuntimeEvaluationAdapter } from "./evaluation";
