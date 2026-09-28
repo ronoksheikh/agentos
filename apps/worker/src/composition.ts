@@ -8,7 +8,7 @@ import { FacebookMessengerAdapter, GraphMetaApi, InMemoryChannelRegistry, Messen
 import { LayeredContextEngine } from "@agentos/context";
 import { PostgresCommentProcessor, PostgresCommentWriteExecutor, RuleCommentClassifier } from "@agentos/comments";
 import { DefaultKnowledgeParser } from "@agentos/knowledge";
-import { OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint } from "@agentos/models";
+import { CircuitBreakerModelProvider, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint } from "@agentos/models";
 import { PostgresAgentVersionRepository, PostgresRealtimeBus, PostgresRuntimeActionRepository, PostgresRuntimeContextSource, PostgresRuntimeDomainActions, PostgresRuntimeTraceRepository } from "@agentos/phase6";
 import { PostgresAttachmentRepository, PostgresBrowserRepository, PostgresExpiredContentRetention } from "@agentos/phase4-operations";
 import { ToolRegistry, type ToolExecutionContext } from "@agentos/tools";
@@ -39,6 +39,7 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
   const parser = new DefaultKnowledgeParser();
   const openaiConfig = { apiKey: required("OPENAI_API_KEY"), ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}), ...(process.env.OPENAI_TIMEOUT_MS ? { timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS) } : {}), ...(process.env.OPENAI_FALLBACK_MODEL ? { fallbackModel: process.env.OPENAI_FALLBACK_MODEL } : {}) };
   const visionModel = await verifyOpenAIEndpoint(openaiConfig, required("OPENAI_MODEL"), process.env.OPENAI_VISION_MODEL);
+  const modelProvider = new CircuitBreakerModelProvider(new OpenAIResponsesProvider(openaiConfig));
   const attachmentService = new AttachmentService(storage, new MessengerMediaDownloader(vault, required("META_MEDIA_ALLOWED_HOSTS").split(",").map((host) => host.trim()).filter(Boolean)), new OpenAIVisionProvider(openaiConfig, visionModel), process.env.ELEVENLABS_API_KEY ? new ElevenLabsAdapter(new ElevenLabsHttpClient({ ...(process.env.ELEVENLABS_ENDPOINT ? { endpoint: process.env.ELEVENLABS_ENDPOINT } : {}), ...(process.env.ELEVENLABS_MODEL ? { model: process.env.ELEVENLABS_MODEL } : {}), ...(process.env.ELEVENLABS_TIMEOUT_MS ? { timeoutMs: Number(process.env.ELEVENLABS_TIMEOUT_MS) } : {}) }), async () => required("ELEVENLABS_API_KEY")) : null, { async extract(bytes, mimeType) { return parser.parse(mimeType === "application/pdf" ? "PDF" : mimeType.includes("wordprocessingml") ? "DOCX" : "TEXT", bytes); } }, realtime, undefined, new PostgresAttachmentRepository(db));
   const attachment: NonNullable<WorkerDependencies["attachment"]> = async (event, signal) => {
     if (event.type !== "attachment.received") return;
@@ -62,12 +63,12 @@ export async function createWorkerDependencies(): Promise<WorkerDependencies> {
   const runtime = new AgentRuntime({
     versions: new AgentVersionService(new PostgresAgentVersionRepository(db)),
     contextEngine: new LayeredContextEngine(new PostgresRuntimeContextSource(db)),
-    models: new OpenAIResponsesProvider(openaiConfig),
+    models: modelProvider,
     tools,
     actions: new DeferredChannelActionExecutor(new PostgresRuntimeActionRepository(db), new PostgresRuntimeDomainActions(db)),
     traces: new PostgresRuntimeTraceRepository(db), realtime, presence,
   });
   const commentProcessor = new PostgresCommentProcessor(db, api, vault, realtime, new RuleCommentClassifier(), new PostgresCommentWriteExecutor(db, runtime, registry));
   const featureFlags = new PostgresFeatureFlags(db);
-  return { db, redisUrl, runtime, registry, presence, realtime, attachment, comments: (event, signal) => commentProcessor.process(event, signal).then(() => {}), trialSweep: () => new PostgresTrialService(db).expireDue(), retentionSweep: () => new PostgresExpiredContentRetention(db, storage).sweep().then(() => {}), capabilities: (businessId) => runtimeCapabilityGrants(featureFlags, businessId, Boolean(browserUrl)) };
+  return { db, redisUrl, runtime, registry, presence, realtime, attachment, comments: (event, signal) => commentProcessor.process(event, signal).then(() => {}), trialSweep: () => new PostgresTrialService(db).expireDue(), retentionSweep: () => new PostgresExpiredContentRetention(db, storage).sweep().then(() => {}), providerCircuitState: () => modelProvider.status().state, capabilities: (businessId) => runtimeCapabilityGrants(featureFlags, businessId, Boolean(browserUrl)) };
 }

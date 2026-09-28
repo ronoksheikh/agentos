@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint } from "@agentos/models";
+import { CircuitBreakerModelProvider, OpenAIResponsesProvider, OpenAIVisionProvider, verifyOpenAIEndpoint, type ModelProvider } from "@agentos/models";
 import { ElevenLabsHttpClient } from "@agentos/attachments";
 import { createAgentFixture } from "./helpers";
 
@@ -9,6 +9,36 @@ const fakeFetch = (impl: (input: Parameters<typeof fetch>[0], init?: Parameters<
 const request = () => ({ runId: "01TEST", version: createAgentFixture({ models: { primary: { provider: "openai", model: "primary" } } }).version, context: { items: [], provenance: [], estimatedTokens: 0, truncated: false }, tools: [], safeToolResults: [], maxOutputTokens: 100, signal: new AbortController().signal });
 
 describe("Phase 7 provider configuration", () => {
+  it("opens after retryable provider failures, fails fast, and recovers through one half-open probe", async () => {
+    let now = 10_000; let calls = 0;
+    const inner: ModelProvider = { async generate() { calls++; return calls <= 2
+      ? { kind: "error", provider: "openai", model: "primary", latencyMs: 0, error: { code: "UNAVAILABLE", message: "Model response unavailable", retryable: true } }
+      : { kind: "actions", provider: "openai", model: "primary", latencyMs: 1, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, actions: [] }; } };
+    const circuit = new CircuitBreakerModelProvider(inner, { failureThreshold: 2, cooldownMs: 1_000, now: () => now });
+    expect((await circuit.generate(request())).kind).toBe("error");
+    expect((await circuit.generate(request())).kind).toBe("error");
+    expect(circuit.status()).toEqual({ state: "open", consecutiveFailures: 2, retryAfterMs: 1_000 });
+    expect((await circuit.generate(request())).kind).toBe("error");
+    expect(calls).toBe(2);
+    now += 1_000;
+    expect(circuit.status().state).toBe("half_open");
+    expect((await circuit.generate(request())).kind).toBe("actions");
+    expect(circuit.status()).toEqual({ state: "closed", consecutiveFailures: 0, retryAfterMs: 0 });
+  });
+
+  it("allows only one half-open provider probe at a time", async () => {
+    let now = 0; let calls = 0; let finishProbe!: (response: Awaited<ReturnType<ModelProvider["generate"]>>) => void;
+    const unavailable = { kind: "error" as const, provider: "openai", model: "primary", latencyMs: 0, error: { code: "UNAVAILABLE" as const, message: "Model response unavailable", retryable: true } };
+    const success = { kind: "actions" as const, provider: "openai", model: "primary", latencyMs: 1, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, actions: [] };
+    const inner: ModelProvider = { generate() { calls++; if (calls === 1) return Promise.resolve(unavailable); return new Promise((resolve) => { finishProbe = resolve; }); } };
+    const circuit = new CircuitBreakerModelProvider(inner, { failureThreshold: 1, cooldownMs: 1_000, now: () => now });
+    await circuit.generate(request()); now += 1_000;
+    const probe = circuit.generate(request());
+    const concurrent = await circuit.generate(request());
+    expect(concurrent.kind).toBe("error"); expect(calls).toBe(2);
+    finishProbe(success); expect((await probe).kind).toBe("actions"); expect(circuit.status().state).toBe("closed");
+  });
+
   it("uses the official Responses transport at an approved base URL and parses actions", async () => {
     const calls: Array<{ url: string; auth: string | null }> = [];
     const fetcher = fakeFetch(async (input, init) => { calls.push({ url: String(input), auth: new Headers(init?.headers).get("authorization") }); return reply([text('{"kind":"actions","actions":[{"type":"SendMessage","text":"Hello"}]}')]); });

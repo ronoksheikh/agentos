@@ -21,11 +21,14 @@ export async function operationalHealth() {
   const now = new Date(); const api = await apiReadiness();
   const browserUrl = process.env.BROWSER_WORKER_URL;
   const browser = browserUrl ? await (async () => { try { return (await fetch(new URL("/health", browserUrl), { signal: AbortSignal.timeout(2000) })).ok; } catch { return false; } })() : null;
-  if (!api.databaseReady) return { asOf: now.toISOString(), api, browser, liveWorkers: 0, work: {}, channels: {}, providerConfiguration: { model: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL), transcription: Boolean(process.env.ELEVENLABS_API_KEY), meta: Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET) } };
-  const [workers, work, channels] = await Promise.all([
+  if (!api.databaseReady) return { asOf: now.toISOString(), api, browser, liveWorkers: 0, work: {}, channels: {}, providerCircuit: { state: "unknown" as const, liveInstances: 0 }, providerConfiguration: { model: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL), transcription: Boolean(process.env.ELEVENLABS_API_KEY), meta: Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET) } };
+  const [workers, work, channels, circuits] = await Promise.all([
     database.select({ count: sql<number>`count(*)::int` }).from(serviceHeartbeats).where(and(eq(serviceHeartbeats.service, "agentos-worker"), gte(serviceHeartbeats.lastSeenAt, new Date(now.getTime() - 90_000)))),
     database.select({ state: workItems.state, count: sql<number>`count(*)::int` }).from(workItems).groupBy(workItems.state),
     database.select({ state: channelConnections.state, count: sql<number>`count(*)::int` }).from(channelConnections).groupBy(channelConnections.state),
+    database.select({ service: serviceHeartbeats.service, count: sql<number>`count(*)::int` }).from(serviceHeartbeats).where(and(sql`${serviceHeartbeats.service} like 'agentos-model-circuit-%'`, gte(serviceHeartbeats.lastSeenAt, new Date(now.getTime() - 90_000)))).groupBy(serviceHeartbeats.service),
   ]);
-  return { asOf: now.toISOString(), api, browser, liveWorkers: workers[0]?.count ?? 0, work: Object.fromEntries(work.map((row) => [row.state, row.count])), channels: Object.fromEntries(channels.map((row) => [row.state, row.count])), providerConfiguration: { model: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL), transcription: Boolean(process.env.ELEVENLABS_API_KEY), meta: Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET) } };
+  const liveInstances = circuits.reduce((sum, row) => sum + row.count, 0);
+  const openInstances = circuits.find((row) => row.service === "agentos-model-circuit-open")?.count ?? 0;
+  return { asOf: now.toISOString(), api, browser, liveWorkers: workers[0]?.count ?? 0, work: Object.fromEntries(work.map((row) => [row.state, row.count])), channels: Object.fromEntries(channels.map((row) => [row.state, row.count])), providerCircuit: { state: liveInstances === 0 ? "unknown" as const : openInstances > 0 ? "open" as const : "closed" as const, liveInstances }, providerConfiguration: { model: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL), transcription: Boolean(process.env.ELEVENLABS_API_KEY), meta: Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET) } };
 }

@@ -14,11 +14,18 @@ export interface WorkerDependencies {
   comments?: ConstructorParameters<typeof EventRouter>[3];
   trialSweep?: () => Promise<number>;
   retentionSweep?: () => Promise<void>;
+  providerCircuitState?: () => string;
 }
 
 export async function startPhase5Worker(deps: WorkerDependencies) {
   const instanceId = ulid();
   const heartbeat = () => deps.db.insert(serviceHeartbeats).values({ instanceId, service: "agentos-worker", lastSeenAt: new Date() }).onConflictDoUpdate({ target: serviceHeartbeats.instanceId, set: { lastSeenAt: new Date() } });
+  const providerInstanceId = ulid();
+  const providerHeartbeat = () => {
+    if (!deps.providerCircuitState) return Promise.resolve();
+    const service = `agentos-model-circuit-${deps.providerCircuitState() === "closed" ? "closed" : "open"}`;
+    return deps.db.insert(serviceHeartbeats).values({ instanceId: providerInstanceId, service, lastSeenAt: new Date() }).onConflictDoUpdate({ target: serviceHeartbeats.instanceId, set: { service, lastSeenAt: new Date() } });
+  };
   const store = new Phase5Store(deps.db);
   const queues = new Phase5Queues(store, deps.redisUrl);
   const router = new EventRouter(store, deps.attachment, deps.browser, deps.comments);
@@ -28,6 +35,7 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
   await deps.retentionSweep?.().catch(() => { console.error("RETENTION_SWEEP_FAILED"); });
   await store.scheduleDueGoals();
   await heartbeat();
+  await providerHeartbeat();
   const stopWorkers = queues.start((work, signal, lease) => processor.handle(work, signal, lease));
   await queues.pump();
   const reconciliationTimer = setInterval(() => { void store.db.select({ id: effectIntents.id, businessId: effectIntents.businessId }).from(effectIntents).where(eq(effectIntents.state, "UNKNOWN")).limit(50).then((effects) => Promise.all(effects.map((effect) => processor.reconcileUnknownEffect(effect.businessId, effect.id).catch(() => "UNKNOWN")))).catch(() => {}); }, 30_000);
@@ -38,8 +46,8 @@ export async function startPhase5Worker(deps: WorkerDependencies) {
     retentionRunning = true;
     void deps.retentionSweep().catch(() => { console.error("RETENTION_SWEEP_FAILED"); }).finally(() => { retentionRunning = false; });
   }, 60_000);
-  const heartbeatTimer = setInterval(() => { void heartbeat().catch(() => { console.error("WORKER_HEARTBEAT_FAILED"); }); }, 20_000);
-  return async () => { clearInterval(reconciliationTimer); clearInterval(trialTimer); clearInterval(retentionTimer); clearInterval(heartbeatTimer); await stopWorkers(); await queues.close(); await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, instanceId)); };
+  const heartbeatTimer = setInterval(() => { void Promise.all([heartbeat(), providerHeartbeat()]).catch(() => { console.error("WORKER_HEARTBEAT_FAILED"); }); }, 20_000);
+  return async () => { clearInterval(reconciliationTimer); clearInterval(trialTimer); clearInterval(retentionTimer); clearInterval(heartbeatTimer); await stopWorkers(); await queues.close(); await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, instanceId)); if (deps.providerCircuitState) await deps.db.delete(serviceHeartbeats).where(eq(serviceHeartbeats.instanceId, providerInstanceId)); };
 }
 
 if (import.meta.main) {
